@@ -1735,7 +1735,7 @@ class FakeMatrixApi extends BaseClient {
               }
             ]
           },
-      '/client/v3/rooms/!726s6s6q:example.com/members': (var req) => {
+      '/client/v3/rooms/!726s6s6q%3Aexample.com/members': (var req) => {
             'chunk': [
               {
                 'content': {
@@ -2034,7 +2034,7 @@ class FakeMatrixApi extends BaseClient {
     'POST': {
       '/client/v3/refresh': (var req) => {
             'access_token': 'a_new_token',
-            'expires_in_ms': 60000,
+            'expires_in_ms': 1000 * 60 * 5,
             'refresh_token': 'another_new_token'
           },
       '/client/v3/delete_devices': (var req) => {},

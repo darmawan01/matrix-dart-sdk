@@ -43,7 +43,7 @@ import 'package:matrix/src/utils/try_get_push_rule.dart';
 
 typedef RoomSorter = int Function(Room a, Room b);
 
-enum LoginState { loggedIn, loggedOut }
+enum LoginState { loggedIn, loggedOut, softLoggedOut }
 
 extension TrailingSlash on Uri {
   Uri stripTrailingSlash() => path.endsWith('/')
@@ -216,8 +216,6 @@ class Client extends MatrixApi {
     importantStateEvents.addAll([
       EventTypes.RoomName,
       EventTypes.RoomAvatar,
-      EventTypes.Message,
-      EventTypes.Encrypted,
       EventTypes.Encryption,
       EventTypes.RoomCanonicalAlias,
       EventTypes.RoomTombstone,
@@ -233,12 +231,8 @@ class Client extends MatrixApi {
       EventTypes.CallAnswer,
       EventTypes.CallReject,
       EventTypes.CallHangup,
-
-      /// hack because having them both in important events and roomPreivew
-      /// makes the statekey '' which means you can only have one event of that
-      /// type
-      // EventTypes.GroupCallPrefix,
-      // EventTypes.GroupCallMemberPrefix,
+      EventTypes.GroupCallPrefix,
+      EventTypes.GroupCallMemberPrefix,
     ]);
 
     // register all the default commands
@@ -267,10 +261,15 @@ class Client extends MatrixApi {
     final tokenResponse = await refresh(refreshToken);
 
     accessToken = tokenResponse.accessToken;
+    final expiresInMs = tokenResponse.expiresInMs;
+    final tokenExpiresAt = expiresInMs == null
+        ? null
+        : DateTime.now().add(Duration(milliseconds: expiresInMs));
+    accessTokenExpiresAt = tokenExpiresAt;
     await database?.updateClient(
       homeserverUrl,
       tokenResponse.accessToken,
-      accessTokenExpiresAt,
+      tokenExpiresAt,
       tokenResponse.refreshToken,
       userId,
       deviceId,
@@ -461,7 +460,12 @@ class Client extends MatrixApi {
   /// login types. Throws an exception if the server is not compatible with the
   /// client and sets [homeserver] to [homeserverUrl] if it is. Supports the
   /// types `Uri` and `String`.
-  Future<HomeserverSummary> checkHomeserver(
+  Future<
+      (
+        DiscoveryInformation?,
+        GetVersionsResponse versions,
+        List<LoginFlow>,
+      )> checkHomeserver(
     Uri homeserverUrl, {
     bool checkWellKnown = true,
     Set<String>? overrideSupportedVersions,
@@ -498,11 +502,7 @@ class Client extends MatrixApi {
             loginTypes.map((f) => f.type ?? '').toSet(), supportedLoginTypes);
       }
 
-      return HomeserverSummary(
-        discoveryInformation: wellKnown,
-        versions: versions,
-        loginFlows: loginTypes,
-      );
+      return (wellKnown, versions, loginTypes);
     } catch (_) {
       homeserver = null;
       rethrow;
@@ -1377,6 +1377,8 @@ class Client extends MatrixApi {
       accessToken = token;
     }
 
+    await ensureNotSoftLoggedOut();
+
     // Check if the notification contains an event at all:
     final eventId = notification.eventId;
     final roomId = notification.roomId;
@@ -1574,7 +1576,7 @@ class Client extends MatrixApi {
     String? userID;
     try {
       Logs().i('Initialize client $clientName');
-      if (isLogged()) {
+      if (onLoginStateChanged.value == LoginState.loggedIn) {
         throw ClientInitPreconditionError(
           'User is already logged in! Call [logout()] first!',
         );
@@ -1592,6 +1594,7 @@ class Client extends MatrixApi {
       _serverConfigCache.invalidate();
 
       final account = await this.database?.getClient(clientName);
+      newRefreshToken ??= account?.tryGet<String>('refresh_token');
       if (account != null) {
         _id = account['client_id'];
         homeserver = Uri.parse(account['homeserver_url']);
@@ -1624,6 +1627,26 @@ class Client extends MatrixApi {
         _deviceID = newDeviceID ?? _deviceID;
         _deviceName = newDeviceName ?? _deviceName;
         olmAccount = newOlmAccount ?? olmAccount;
+      }
+
+      // If we are refreshing the session, we are done here:
+      if (onLoginStateChanged.value == LoginState.softLoggedOut) {
+        if (newRefreshToken != null && accessToken != null && userID != null) {
+          // Store the new tokens:
+          await _database?.updateClient(
+            homeserver.toString(),
+            accessToken,
+            accessTokenExpiresAt,
+            newRefreshToken,
+            userID,
+            _deviceID,
+            _deviceName,
+            prevBatch,
+            encryption?.pickledOlmAccount,
+          );
+        }
+        onLoginStateChanged.add(LoginState.loggedIn);
+        return;
       }
 
       if (accessToken == null || homeserver == null || userID == null) {
@@ -1767,6 +1790,10 @@ class Client extends MatrixApi {
   bool get syncPending => _currentSync != null;
 
   /// Controls the background sync (automatically looping forever if turned on).
+  /// If you use soft logout, you need to manually call
+  /// `ensureNotSoftLoggedOut()` before doing any API request after setting
+  /// the background sync to false, as the soft logout is handeld automatically
+  /// in the sync loop.
   set backgroundSync(bool enabled) {
     _backgroundSync = enabled;
     if (_backgroundSync) {
@@ -1806,6 +1833,34 @@ class Client extends MatrixApi {
     return;
   }
 
+  Future<void> _handleSoftLogout() async {
+    final onSoftLogout = this.onSoftLogout;
+    if (onSoftLogout == null) return;
+
+    onLoginStateChanged.add(LoginState.softLoggedOut);
+    try {
+      await onSoftLogout(this);
+      onLoginStateChanged.add(LoginState.loggedIn);
+    } catch (e, s) {
+      Logs().w('Unable to refresh session after soft logout', e, s);
+      await clear();
+      rethrow;
+    }
+  }
+
+  /// Checks if the token expires in under [expiresIn] time and calls the
+  /// given `onSoftLogout()` if so. You have to provide `onSoftLogout` in the
+  /// Client constructor. Otherwise this will do nothing.
+  Future<void> ensureNotSoftLoggedOut(
+      [Duration expiresIn = const Duration(minutes: 1)]) async {
+    final tokenExpiresAt = accessTokenExpiresAt;
+    if (onSoftLogout != null &&
+        tokenExpiresAt != null &&
+        tokenExpiresAt.difference(DateTime.now()) <= expiresIn) {
+      await _handleSoftLogout();
+    }
+  }
+
   /// Pass a timeout to set how long the server waits before sending an empty response.
   /// (Corresponds to the timeout param on the /sync request.)
   Future<void> _innerSync({Duration? timeout}) async {
@@ -1820,19 +1875,12 @@ class Client extends MatrixApi {
       Object? syncError;
       await _checkSyncFilter();
 
-      // Call onSoftLogout 5 minutes before access token expires to prevent
-      // failing network requests.
-      final tokenExpiresAt = accessTokenExpiresAt;
-      if (onSoftLogout != null &&
-          tokenExpiresAt != null &&
-          tokenExpiresAt.difference(DateTime.now()) <= Duration(minutes: 5)) {
-        await onSoftLogout?.call(this);
-      }
-
       // The timeout we send to the server for the sync loop. It says to the
       // server that we want to receive an empty sync response after this
       // amount of time if nothing happens.
       timeout ??= const Duration(seconds: 30);
+
+      await ensureNotSoftLoggedOut(timeout * 2);
 
       final syncRequest = sync(
         filter: syncFilterId,
@@ -1910,12 +1958,8 @@ class Client extends MatrixApi {
         final onSoftLogout = this.onSoftLogout;
         if (e.raw.tryGet<bool>('soft_logout') == true && onSoftLogout != null) {
           Logs().w('The user has been soft logged out! Try to login again...');
-          try {
-            await onSoftLogout(this);
-          } catch (e, s) {
-            Logs().e('Unable to login again', e, s);
-            await clear();
-          }
+
+          await _handleSoftLogout();
         } else {
           Logs().w('The user has been logged out!');
           await clear();
@@ -2082,7 +2126,12 @@ class Client extends MatrixApi {
       final id = entry.key;
       final syncRoomUpdate = entry.value;
 
-      await database?.storeRoomUpdate(id, syncRoomUpdate, this);
+      // Is the timeline limited? Then all previous messages should be
+      // removed from the database!
+      if (syncRoomUpdate is JoinedRoomUpdate &&
+          syncRoomUpdate.timeline?.limited == true) {
+        await database?.deleteTimelineForRoom(id);
+      }
       final room = await _updateRoomsByRoomUpdate(id, syncRoomUpdate);
 
       final timelineUpdateType = direction != null
@@ -2153,6 +2202,7 @@ class Client extends MatrixApi {
           await _handleRoomEvents(room, state, EventUpdateType.inviteState);
         }
       }
+      await database?.storeRoomUpdate(id, syncRoomUpdate, room.lastEvent, this);
     }
   }
 
@@ -2429,50 +2479,56 @@ class Client extends MatrixApi {
     if (eventUpdate.type == EventUpdateType.history) return;
 
     switch (eventUpdate.type) {
-      case EventUpdateType.timeline:
-      case EventUpdateType.state:
       case EventUpdateType.inviteState:
-        final stateEvent = Event.fromJson(eventUpdate.content, room);
-        if (stateEvent.type == EventTypes.Redaction) {
-          final String? redacts = eventUpdate.content.tryGet<String>('redacts');
-          if (redacts != null) {
-            room.states.forEach(
-              (String key, Map<String, Event> states) => states.forEach(
-                (String key, Event state) {
-                  if (state.eventId == redacts) {
-                    state.setRedactionEvent(stateEvent);
-                  }
-                },
-              ),
-            );
-          }
-        } else {
-          // We want to set state the in-memory cache for the room with the new event.
-          // To do this, we have to respect to not save edits, unless they edit the
-          // current last event.
-          // Additionally, we only store the event in-memory if the room has either been
-          // post-loaded or the event is animportant state event.
-          final noMessageOrNoEdit = stateEvent.type != EventTypes.Message ||
-              stateEvent.relationshipType != RelationshipTypes.edit;
-          final editingLastEvent =
-              stateEvent.relationshipEventId == room.lastEvent?.eventId;
-          final consecutiveEdit =
-              room.lastEvent?.relationshipType == RelationshipTypes.edit &&
-                  stateEvent.relationshipEventId ==
-                      room.lastEvent?.relationshipEventId;
-          final importantOrRoomLoaded =
-              eventUpdate.type == EventUpdateType.inviteState ||
-                  !room.partial ||
-                  // make sure we do overwrite events we have already loaded.
-                  room.states[stateEvent.type]
-                          ?.containsKey(stateEvent.stateKey ?? '') ==
-                      true ||
-                  importantStateEvents.contains(stateEvent.type);
-          if ((noMessageOrNoEdit || editingLastEvent || consecutiveEdit) &&
-              importantOrRoomLoaded) {
-            room.setState(stateEvent);
-          }
+        room.setState(Event.fromJson(eventUpdate.content, room));
+        break;
+      case EventUpdateType.state:
+      case EventUpdateType.timeline:
+        final event = Event.fromJson(eventUpdate.content, room);
+
+        // Update the room state:
+        if (!room.partial ||
+            // make sure we do overwrite events we have already loaded.
+            room.states[event.type]?.containsKey(event.stateKey ?? '') ==
+                true ||
+            importantStateEvents.contains(event.type)) {
+          room.setState(event);
         }
+        if (eventUpdate.type != EventUpdateType.timeline) break;
+
+        // If last event is null or not a valid room preview event anyway,
+        // just use this:
+        if (room.lastEvent == null ||
+            !roomPreviewLastEvents.contains(room.lastEvent?.type)) {
+          room.lastEvent = event;
+          break;
+        }
+
+        // Is this event redacting the last event?
+        if (event.type == EventTypes.Redaction &&
+            (event.content.tryGet<String>('redacts') ?? event.redacts) ==
+                room.lastEvent?.eventId) {
+          room.lastEvent?.setRedactionEvent(event);
+          break;
+        }
+
+        // Is this event an edit of the last event? Otherwise ignore it.
+        if (event.relationshipType == RelationshipTypes.edit) {
+          if (event.relationshipEventId == room.lastEvent?.eventId ||
+              (room.lastEvent?.relationshipType == RelationshipTypes.edit &&
+                  event.relationshipEventId ==
+                      room.lastEvent?.relationshipEventId)) {
+            room.lastEvent = event;
+          }
+          break;
+        }
+
+        // Is this event of an important type for the last event?
+        if (!roomPreviewLastEvents.contains(event.type)) break;
+
+        // Event is a valid new lastEvent:
+        room.lastEvent = event;
+
         break;
       case EventUpdateType.accountData:
         room.roomAccountData[eventUpdate.content['type']] =
@@ -3401,18 +3457,6 @@ class FileTooBigMatrixException extends MatrixException {
   @override
   String toString() =>
       'File size ${_formatFileSize(actualFileSize)} exceeds allowed maximum of ${_formatFileSize(maxFileSize)}';
-}
-
-class HomeserverSummary {
-  final DiscoveryInformation? discoveryInformation;
-  final GetVersionsResponse versions;
-  final List<LoginFlow> loginFlows;
-
-  HomeserverSummary({
-    required this.discoveryInformation,
-    required this.versions,
-    required this.loginFlows,
-  });
 }
 
 class ArchivedRoom {

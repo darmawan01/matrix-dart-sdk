@@ -1,3 +1,28 @@
+## [0.26.1] 15th March 2024
+- chore: add noice/echo cancelling flags to getUserMedia (td)
+- feat: Add commands /ignore and /unignore (Krille)
+- feat: Offers client.ensureNotSoftLoggedOut() to fix using client with stopped sync loop (Krille)
+- fix: throw EventTooLarge on exceeding max fed PDU (td)
+
+## [0.26.0] 8th March 2024
+This release adds a new state to the `LoginState` named `softLoggedOut`. Learn more about it here:
+https://spec.matrix.org/v1.9/client-server-api/#soft-logout
+
+When a client is in a soft logout state, it is not yet cleared, but sync has stopped and it expects
+to perform a token refresh or a new login while providing the old device ID.
+
+- refactor: BREAKING Allow calling init when in soft logout state and fix some bugs (Krille)
+
+## [0.25.13] 7th March 2024
+- chore: Add regression test for invite->join state handling (Nicolas Werner)
+- feat: add fromLocalStoreOnly to Event.downloadAndDecryptAttachment (Romain GUILLOT)
+- fix: archived room state store logic (Nicolas Werner)
+- fix: Do not assume a missing timestamp means "now" (Nicolas Werner)
+- fix: Do not compare timestamps when setting roomstate (Nicolas Werner)
+- fix: properly fetch participants when transitioning from invite to join (Nicolas Werner)
+- fix: properly overwrite loaded state for partial loaded rooms (Nicolas Werner)
+- fix: some tests fail with the "fixed" membership fetch logic (Nicolas Werner)
+
 ## [0.25.12] 1st March 2024
 - chore: pass refreshToken to uiaLogin (Krille)
 - fix: removed prev_sender for empty chats (Patrick Hettich)

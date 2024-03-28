@@ -193,22 +193,9 @@ class KeyManager {
           event.content['session_id'] == sessionId) {
         final decrypted = encryption.decryptRoomEventSync(roomId, event);
         if (decrypted.type != EventTypes.Encrypted) {
-          // Remove this from the state to make sure it does not appear as last event
-          room.states.remove(EventTypes.Encrypted);
-          // Set the decrypted event as last event by adding it to the state
-          room.states[decrypted.type] = {'': decrypted};
-          // Also store in database
-          final database = client.database;
-          if (database != null) {
-            await database.storeEventUpdate(
-              EventUpdate(
-                roomID: room.id,
-                type: EventUpdateType.state,
-                content: decrypted.toJson(),
-              ),
-              client,
-            );
-          }
+          // No need to persist it as the lastEvent is persisted in the sync
+          // right after processing to-device messages:
+          room.lastEvent = decrypted;
         }
       }
       // and finally broadcast the new session
@@ -1180,7 +1167,7 @@ RoomKeys generateUploadKeysImplementation(GenerateUploadKeysArgs args) {
         'algorithm': AlgorithmTypes.megolmV1AesSha2,
         'forwarding_curve25519_key_chain': sess.forwardingCurve25519KeyChain,
         'sender_key': sess.senderKey,
-        'sender_clencaimed_keys': sess.senderClaimedKeys,
+        'sender_claimed_keys': sess.senderClaimedKeys,
         'session_key': sess.inboundGroupSession!
             .export_session(sess.inboundGroupSession!.first_known_index()),
       };

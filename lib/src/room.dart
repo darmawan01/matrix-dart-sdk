@@ -288,8 +288,9 @@ class Room {
 
   /// The avatar of the room if set by a participant.
   Uri? get avatar {
-    final avatarUrl = getState(EventTypes.RoomAvatar)?.content['url'];
-    if (avatarUrl is String) {
+    final avatarUrl =
+        getState(EventTypes.RoomAvatar)?.content.tryGet<String>('url');
+    if (avatarUrl != null) {
       return Uri.tryParse(avatarUrl);
     }
 
@@ -305,13 +306,6 @@ class Room {
       if (user != null) {
         return unsafeGetUserFromMemoryOrFallback(user).avatarUrl;
       }
-    }
-    if (membership == Membership.invite) {
-      final userID = client.userID;
-      if (userID == null) return null;
-      return getState(EventTypes.RoomMember, userID)
-          ?.senderFromMemoryOrFallback
-          .avatarUrl;
     }
     return null;
   }
@@ -1207,11 +1201,15 @@ class Room {
   /// Returns the event ID of the new state event. If there is no known
   /// power level event, there might something broken and this returns null.
   Future<String> setPower(String userID, int power) async {
-    var powerMap = getState(EventTypes.RoomPowerLevels)?.content;
-    if (powerMap is! Map<String, dynamic>) {
-      powerMap = <String, dynamic>{};
-    }
-    (powerMap['users'] ??= {})[userID] = power;
+    final powerMap = Map<String, Object?>.from(
+      getState(EventTypes.RoomPowerLevels)?.content ?? {},
+    );
+
+    final usersPowerMap = powerMap['users'] is Map<String, Object?>
+        ? powerMap['users'] as Map<String, Object?>
+        : (powerMap['users'] = <String, Object?>{});
+
+    usersPowerMap[userID] = power;
 
     return await client.setRoomStateWithKey(
       id,
@@ -1222,7 +1220,15 @@ class Room {
   }
 
   /// Call the Matrix API to invite a user to this room.
-  Future<void> invite(String userID) => client.inviteUser(id, userID);
+  Future<void> invite(
+    String userID, {
+    String? reason,
+  }) =>
+      client.inviteUser(
+        id,
+        userID,
+        reason: reason,
+      );
 
   /// Request more previous events from the server. [historyCount] defines how much events should
   /// be received maximum. When the request is answered, [onHistoryReceived] will be triggered **before**
@@ -2233,7 +2239,7 @@ class Room {
       states[EventTypes.spaceParent]
           ?.values
           .map((state) => SpaceParent.fromState(state))
-          .where((child) => child.via?.isNotEmpty ?? false)
+          .where((child) => child.via.isNotEmpty)
           .toList() ??
       [];
 
@@ -2246,7 +2252,7 @@ class Room {
       : (states[EventTypes.spaceChild]
               ?.values
               .map((state) => SpaceChild.fromState(state))
-              .where((child) => child.via?.isNotEmpty ?? false)
+              .where((child) => child.via.isNotEmpty)
               .toList() ??
           [])
     ..sort((a, b) => a.order.isEmpty || b.order.isEmpty

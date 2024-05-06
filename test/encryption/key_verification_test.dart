@@ -27,7 +27,6 @@ import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
 import '../fake_client.dart';
 import '../fake_database.dart';
-import '../fake_matrix_api.dart';
 
 EventUpdate getLastSentEvent(KeyVerification req) {
   final entry = FakeMatrixApi.calledEndpoints.entries
@@ -48,20 +47,8 @@ EventUpdate getLastSentEvent(KeyVerification req) {
 }
 
 void main() async {
-  var olmEnabled = true;
-  try {
-    await olm.init();
-    olm.get_library_version();
-  } catch (e) {
-    olmEnabled = false;
-    Logs().w('[LibOlm] Failed to load LibOlm', e);
-  }
-  Logs().i('[LibOlm] Enabled: $olmEnabled');
-
-  final dynamic skip = olmEnabled ? false : 'olm library not available';
-
   /// All Tests related to the ChatTime
-  group('Key Verification', () {
+  group('Key Verification', tags: 'olm', () {
     Logs().level = Level.error;
 
     // key @othertest:fakeServer.notExisting
@@ -70,6 +57,12 @@ void main() async {
 
     late Client client1;
     late Client client2;
+
+    setUpAll(() async {
+      await olm.init();
+      olm.get_library_version();
+    });
+
     setUp(() async {
       client1 = await getClient();
       client2 = Client(
@@ -101,7 +94,11 @@ void main() async {
         KeyVerificationMethod.qrShow,
         KeyVerificationMethod.reciprocate
       };
+
+      // get client2 device keys to start verification
+      await client1.updateUserDeviceKeys(additionalUsers: {client2.userID!});
     });
+
     tearDown(() async {
       await client1.dispose(closeDatabase: true);
       await client2.dispose(closeDatabase: true);
@@ -810,5 +807,5 @@ void main() async {
       await client1.encryption!.keyVerificationManager.cleanup();
       await client2.encryption!.keyVerificationManager.cleanup();
     });
-  }, skip: skip);
+  });
 }

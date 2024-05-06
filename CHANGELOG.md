@@ -1,3 +1,25 @@
+## [0.28.1] 30th April 2024
+- chore: expose fake matrix api (td)
+- chore: update voip readme (td)
+- fix: allow mesh group call invite (td)
+- fix: checkout repo for gh_release job (td)
+- fix: conduit container (td)
+- fix: Don't fail sync if a presence event has an empty presence field (morguldir)
+- fix: Fetch invite state after restart app (krille-chan)
+- refactor: Remove unused variable (Krille)
+
+## [0.28.0] 23rd April 2024
+This release introduces the new famedly calls, it brings 1:1, mesh and livekit calls support to the matrix dart sdk, read more at: [voip docs](lib/src/voip/README.md)
+
+
+- feat: famedly calls (td)
+- chore: create_gh_release job (td)
+- feat: lcov and tag olm tests (td)
+- fix: Make room.setPower more type safe and avoid change powerlevel in RAM before sending request to server (krille-chan)
+- refactor: Use prevBatch from server for pagination in event search (krille-chan)
+- fix: canChangePowerLevel should return true for own user (krille-chan)
+
+
 ## [0.27.0] 16th April 2024
 
 - chore: add api lite readme
@@ -303,7 +325,7 @@ or before logout), excessive linebreaks in markdown messages and a few edge case
 - fix: Check the max server file size after shrinking not before (Krille)
 - fix: casting of a List<dynamic> to List<String> in getEventList and getEventIdList (td)
 - fix: Skip rules with unknown conditions (Nicolas Werner)
-- fix: allow passing a WrappedMediaStream to GroupCall.enter() to use as the local user media stream (td)
+- fix: allow passing a WrappedMediaStream to GroupCallSession.enter() to use as the local user media stream (td)
 
 ## [0.19.0] - 21st April 2023
 

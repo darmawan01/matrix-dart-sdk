@@ -94,7 +94,7 @@ class Room {
   /// The room states are a key value store of the key (`type`,`state_key`) => State(event).
   /// In a lot of cases the `state_key` might be an empty string. You **should** use the
   /// methods `getState()` and `setState()` to interact with the room states.
-  Map<String, Map<String, Event>> states = {};
+  Map<String, Map<String, StrippedStateEvent>> states = {};
 
   /// Key-Value store for ephemerals.
   Map<String, BasicRoomEvent> ephemerals = {};
@@ -157,19 +157,31 @@ class Room {
 
   /// Returns the [Event] for the given [typeKey] and optional [stateKey].
   /// If no [stateKey] is provided, it defaults to an empty string.
-  Event? getState(String typeKey, [String stateKey = '']) =>
+  /// This returns either a `StrippedStateEvent` for rooms with membership
+  /// "invite" or a `User`/`Event`. If you need additional information like
+  /// the Event ID or originServerTs you need to do a type check like:
+  /// ```dart
+  /// if (state is Event) { /*...*/ }
+  /// ```
+  StrippedStateEvent? getState(String typeKey, [String stateKey = '']) =>
       states[typeKey]?[stateKey];
 
   /// Adds the [state] to this room and overwrites a state with the same
   /// typeKey/stateKey key pair if there is one.
-  void setState(Event state) {
+  void setState(StrippedStateEvent state) {
     // Ignore other non-state events
     final stateKey = state.stateKey;
-    final roomId = state.roomId;
-    if (roomId == null || roomId != id) {
-      Logs().w('Tried to set state event for wrong room!');
-      return;
+
+    // For non invite rooms this is usually an Event and we should validate
+    // the room ID:
+    if (state is Event) {
+      final roomId = state.roomId;
+      if (roomId == null || roomId != id) {
+        Logs().wtf('Tried to set state event for wrong room!');
+        return;
+      }
     }
+
     if (stateKey == null) {
       Logs().w(
         'Tried to set a non state event with type "${state.type}" as state event for a room',
@@ -179,7 +191,7 @@ class Room {
 
     (states[state.type] ??= {})[stateKey] = state;
 
-    client.onRoomState.add(state);
+    client.onRoomState.add((roomId: id, state: state));
   }
 
   /// ID of the fully read marker event.
@@ -213,6 +225,12 @@ class Room {
   /// from the database, that you need to correctly calculate the displayname
   /// and the avatar of the room.
   Future<List<User>> loadHeroUsers() async {
+    // For invite rooms request own user and invitor.
+    if (membership == Membership.invite) {
+      final ownUser = await requestUser(client.userID!, requestProfile: false);
+      if (ownUser != null) await requestUser(ownUser.senderId);
+    }
+
     var heroes = summary.mHeroes;
     if (heroes == null) {
       final directChatMatrixID = this.directChatMatrixID;
@@ -235,6 +253,9 @@ class Room {
   /// without a name, then it will return the localized version of 'Group with Alice' instead
   /// of just 'Alice' to make it different to a direct chat.
   /// Empty chats will become the localized version of 'Empty Chat'.
+  /// Please note, that necessary room members are lazy loaded. To be sure
+  /// that you have the room members, call and await `Room.loadHeroUsers()`
+  /// before.
   /// This method requires a localization class which implements [MatrixLocalizations]
   String getLocalizedDisplayname([
     MatrixLocalizations i18n = const MatrixDefaultLocalizations(),
@@ -265,10 +286,14 @@ class Room {
       return isDirectChat ? result : i18n.groupWith(result);
     }
     if (membership == Membership.invite) {
-      final sender = getState(EventTypes.RoomMember, client.userID!)
-          ?.senderFromMemoryOrFallback
+      final ownMember = unsafeGetUserFromMemoryOrFallback(client.userID!);
+
+      unsafeGetUserFromMemoryOrFallback(ownMember.senderId)
           .calcDisplayname(i18n: i18n);
-      if (sender != null) return sender;
+      if (ownMember.senderId != ownMember.stateKey) {
+        return unsafeGetUserFromMemoryOrFallback(ownMember.senderId)
+            .calcDisplayname(i18n: i18n);
+      }
     }
     if (membership == Membership.leave) {
       if (directChatMatrixID != null) {
@@ -287,6 +312,9 @@ class Room {
   }
 
   /// The avatar of the room if set by a participant.
+  /// Please note, that necessary room members are lazy loaded. To be sure
+  /// that you have the room members, call and await `Room.loadHeroUsers()`
+  /// before.
   Uri? get avatar {
     final avatarUrl =
         getState(EventTypes.RoomAvatar)?.content.tryGet<String>('url');
@@ -298,7 +326,7 @@ class Room {
     if (heroes != null && heroes.length == 1) {
       final hero = getState(EventTypes.RoomMember, heroes.first);
       if (hero != null) {
-        return hero.asUser.avatarUrl;
+        return hero.asUser(this).avatarUrl;
       }
     }
     if (isDirectChat) {
@@ -352,9 +380,6 @@ class Room {
   /// Wheither this is a direct chat or not
   bool get isDirectChat => directChatMatrixID != null;
 
-  /// Must be one of [all, mention]
-  String? notificationSettings;
-
   Event? _lastEvent;
 
   set lastEvent(Event? event) {
@@ -372,6 +397,7 @@ class Room {
     states.forEach((final String key, final entry) {
       final state = entry[''];
       if (state == null) return;
+      if (state is! Event) return;
       if (state.originServerTs.millisecondsSinceEpoch >
           lastTime.millisecondsSinceEpoch) {
         lastTime = state.originServerTs;
@@ -403,7 +429,6 @@ class Room {
     this.highlightCount = 0,
     this.prev_batch,
     required this.client,
-    this.notificationSettings,
     Map<String, BasicRoomEvent>? roomAccountData,
     RoomSummary? summary,
     Event? lastEvent,
@@ -1544,7 +1569,7 @@ class Room {
     if (members != null) {
       return members.entries
           .where((entry) => entry.value.type == EventTypes.RoomMember)
-          .map((entry) => entry.value.asUser)
+          .map((entry) => entry.value.asUser(this))
           .where((user) => membershipFilter.contains(user.membership))
           .toList();
     }
@@ -1633,7 +1658,7 @@ class Room {
   User unsafeGetUserFromMemoryOrFallback(String mxID) {
     final user = getState(EventTypes.RoomMember, mxID);
     if (user != null) {
-      return user.asUser;
+      return user.asUser(this);
     } else {
       if (mxID.isValidMatrixId) {
         // ignore: discarded_futures
@@ -1662,7 +1687,7 @@ class Room {
     // Checks if the user is really missing
     final stateUser = getState(EventTypes.RoomMember, mxID);
     if (stateUser != null) {
-      return stateUser.asUser;
+      return stateUser.asUser(this);
     }
 
     // it may be in the database
@@ -1835,7 +1860,7 @@ class Room {
     return powerForChangingStateEvent(action) <= ownPowerLevel;
   }
 
-  /// returns the powerlevel required for chaning the `action` defaults to
+  /// returns the powerlevel required for changing the `action` defaults to
   /// state_default if `action` isn't specified in events override.
   /// If there is no state_default in the m.room.power_levels event, the
   /// state_default is 50. If the room contains no m.room.power_levels event,
@@ -1850,25 +1875,18 @@ class Room {
         50;
   }
 
-  bool get canCreateGroupCall =>
-      canChangeStateEvent(EventTypes.GroupCallPrefix) && groupCallsEnabled;
-
-  bool get canJoinGroupCall =>
-      canChangeStateEvent(EventTypes.GroupCallMemberPrefix) &&
-      groupCallsEnabled;
-
-  /// if returned value is not null `org.matrix.msc3401.call.member` is present
+  /// if returned value is not null `EventTypes.GroupCallMember` is present
   /// and group calls can be used
-  bool get groupCallsEnabled {
+  bool get groupCallsEnabledForEveryone {
     final powerLevelMap = getState(EventTypes.RoomPowerLevels)?.content;
     if (powerLevelMap == null) return false;
-    return powerForChangingStateEvent(EventTypes.GroupCallMemberPrefix) <=
-            getDefaultPowerLevel(powerLevelMap) &&
-        powerForChangingStateEvent(EventTypes.GroupCallPrefix) <=
-            getDefaultPowerLevel(powerLevelMap);
+    return powerForChangingStateEvent(EventTypes.GroupCallMember) <=
+        getDefaultPowerLevel(powerLevelMap);
   }
 
-  /// sets the `org.matrix.msc3401.call.member` power level to users default for
+  bool get canJoinGroupCall => canChangeStateEvent(EventTypes.GroupCallMember);
+
+  /// sets the `EventTypes.GroupCallMember` power level to users default for
   /// group calls, needs permissions to change power levels
   Future<void> enableGroupCalls() async {
     if (!canChangePowerLevel) return;
@@ -1878,9 +1896,7 @@ class Room {
       final eventsMap = newPowerLevelMap.tryGetMap<String, Object?>('events') ??
           <String, Object?>{};
       eventsMap.addAll({
-        EventTypes.GroupCallPrefix: getDefaultPowerLevel(currentPowerLevelsMap),
-        EventTypes.GroupCallMemberPrefix:
-            getDefaultPowerLevel(currentPowerLevelsMap)
+        EventTypes.GroupCallMember: getDefaultPowerLevel(currentPowerLevelsMap)
       });
       newPowerLevelMap.addAll({'events': eventsMap});
       await client.setRoomStateWithKey(
@@ -2229,14 +2245,14 @@ class Room {
   /// `m.space`.
   bool get isSpace =>
       getState(EventTypes.RoomCreate)?.content.tryGet<String>('type') ==
-      RoomCreationTypes.mSpace; // TODO: Magic string!
+      RoomCreationTypes.mSpace;
 
   /// The parents of this room. Currently this SDK doesn't yet set the canonical
   /// flag and is not checking if this room is in fact a child of this space.
   /// You should therefore not rely on this and always check the children of
   /// the space.
   List<SpaceParent> get spaceParents =>
-      states[EventTypes.spaceParent]
+      states[EventTypes.SpaceParent]
           ?.values
           .map((state) => SpaceParent.fromState(state))
           .where((child) => child.via.isNotEmpty)
@@ -2249,7 +2265,7 @@ class Room {
   /// sorted at the end of the list.
   List<SpaceChild> get spaceChildren => !isSpace
       ? throw Exception('Room is not a space!')
-      : (states[EventTypes.spaceChild]
+      : (states[EventTypes.SpaceChild]
               ?.values
               .map((state) => SpaceChild.fromState(state))
               .where((child) => child.via.isNotEmpty)
@@ -2268,12 +2284,12 @@ class Room {
   }) async {
     if (!isSpace) throw Exception('Room is not a space!');
     via ??= [client.userID!.domain!];
-    await client.setRoomStateWithKey(id, EventTypes.spaceChild, roomId, {
+    await client.setRoomStateWithKey(id, EventTypes.SpaceChild, roomId, {
       'via': via,
       if (order != null) 'order': order,
       if (suggested != null) 'suggested': suggested,
     });
-    await client.setRoomStateWithKey(roomId, EventTypes.spaceParent, id, {
+    await client.setRoomStateWithKey(roomId, EventTypes.SpaceParent, id, {
       'via': via,
     });
     return;

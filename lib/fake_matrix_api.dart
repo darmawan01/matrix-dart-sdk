@@ -1,122 +1,297 @@
-/* MIT License
-* 
-* Copyright (C) 2019, 2020, 2021 Famedly GmbH
-* 
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-* 
-* The above copyright notice and this permission notice shall be included in all
-* copies or substantial portions of the Software.
-* 
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-* SOFTWARE.
-*/
+/*
+ *   Famedly Matrix SDK
+ *   Copyright (C) 2019, 2020 Famedly GmbH
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU Affero General Public License as
+ *   published by the Free Software Foundation, either version 3 of the
+ *   License, or (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *   GNU Affero General Public License for more details.
+ *
+ *   You should have received a copy of the GNU Affero General Public License
+ *   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:core';
 import 'dart:math';
 
 import 'package:http/http.dart';
-import 'package:http/testing.dart';
 
-import 'package:matrix/matrix_api_lite.dart';
-
-Map<String, Object?> decodeJson(dynamic data) {
-  if (data is String) {
-    return json.decode(data) as Map<String, Object?>;
-  }
-  if (data is Map && data.isEmpty) {
-    return <String, Object?>{};
-  }
-  return data as Map<String, Object?>;
-}
+import 'package:matrix/matrix.dart' as sdk;
+import 'package:matrix/matrix.dart';
 
 T? tryCast<T>(dynamic object) => object is T ? object : null;
 
-/// A mock http client for testing purposes.
-class FakeMatrixApi extends MockClient {
-  static final calledEndpoints = <String, List<Object?>>{};
-  static int eventCounter = 0;
+Map<String, dynamic> decodeJson(dynamic data) {
+  if (data is String) {
+    return json.decode(data);
+  }
+  if (data.isEmpty) {
+    return <String, dynamic>{};
+  }
+  return data;
+}
 
-  FakeMatrixApi()
-      : super((request) async {
-          // Collect data from Request
-          var action = request.url.path;
-          if (request.url.path.contains('/_matrix')) {
-            action =
-                '${request.url.path.split('/_matrix').last}?${request.url.query}';
-          }
+class FakeMatrixApi extends BaseClient {
+  static String? expectedAccessToken;
 
-          if (action.endsWith('?')) {
-            action = action.substring(0, action.length - 1);
-          }
-          if (action.endsWith('/')) {
-            action = action.substring(0, action.length - 1);
-          }
-          final method = request.method;
-          final dynamic data =
-              method == 'GET' ? request.url.queryParameters : request.body;
-          dynamic res = <String, Object?>{};
-          var statusCode = 200;
+  static Map<String, List<dynamic>> get calledEndpoints =>
+      currentApi!._calledEndpoints;
+  static int get eventCounter => currentApi!._eventCounter;
+  static set eventCounter(int c) {
+    currentApi!._eventCounter = c;
+  }
 
-          //print('\$method request to $action with Data: $data');
+  static set client(sdk.Client? c) {
+    currentApi?._client = c;
+  }
 
-          // Sync requests with timeout
-          if (data is Map<String, Object?> && data['timeout'] is String) {
-            await Future<void>.delayed(Duration(seconds: 5));
-          }
+  static set failToDevice(bool fail) {
+    currentApi?._failToDevice = fail;
+  }
 
-          if (request.url.origin != 'https://fakeserver.notexisting') {
-            return Response(
-                '<html><head></head><body>Not found...</body></html>', 404);
-          }
+  static set trace(bool t) {
+    currentApi?._trace = t;
+  }
 
-          // Call API
-          if (!calledEndpoints.containsKey(action)) {
-            calledEndpoints[action] = [];
-          }
-          calledEndpoints[action]!.add(data);
-          if (api.containsKey(method) && api[method]!.containsKey(action)) {
-            res = api[method]![action]?.call(data);
-            if (res is Map && res.containsKey('errcode')) {
-              statusCode = 405;
-            }
-          } else if (method == 'PUT' &&
-              action.contains('/client/v3/sendToDevice/')) {
-            res = <String, Object?>{};
-          } else if (method == 'GET' &&
-              action.contains('/client/v3/rooms/') &&
-              action.contains('/state/m.room.member/')) {
-            res = {'displayname': ''};
-          } else if (method == 'PUT' &&
-              action.contains(
-                  '/client/v3/rooms/!1234%3AfakeServer.notExisting/send/')) {
-            res = {'event_id': '\$event${FakeMatrixApi.eventCounter++}'};
-          } else if (action.contains('/client/v3/sync')) {
-            res = {
-              'next_batch': DateTime.now().millisecondsSinceEpoch.toString
-            };
-          } else {
-            res = {
-              'errcode': 'M_UNRECOGNIZED',
-              'error': 'Unrecognized request'
-            };
-            statusCode = 405;
-          }
+  final _calledEndpoints = <String, List<dynamic>>{};
+  int _eventCounter = 0;
+  sdk.Client? _client;
+  bool _failToDevice = false;
+  bool _trace = false;
+  final _apiCallStream = StreamController<String>.broadcast();
 
-          return Response.bytes(utf8.encode(json.encode(res)), statusCode);
+  static FakeMatrixApi? currentApi;
+
+  static Future<String> firstWhereValue(String value) {
+    return firstWhere((v) => v == value);
+  }
+
+  static Future<String> firstWhere(bool Function(String element) test) {
+    for (final e in currentApi!._calledEndpoints.entries) {
+      if (e.value.isNotEmpty && test(e.key)) {
+        return Future.value(e.key);
+      }
+    }
+
+    final completer = Completer<String>();
+    StreamSubscription<String>? sub;
+    sub = currentApi!._apiCallStream.stream.listen((action) {
+      if (test(action)) {
+        sub?.cancel();
+        completer.complete(action);
+      }
+    });
+    return completer.future;
+  }
+
+  FutureOr<Response> mockIntercept(Request request) async {
+    // Collect data from Request
+    var action = request.url.path;
+    if (request.url.path.contains('/_matrix')) {
+      action =
+          '${request.url.path.split('/_matrix').last}?${request.url.query}';
+    }
+
+    // ignore: avoid_print
+    if (_trace) print('called $action');
+
+    if (action.endsWith('?')) {
+      action = action.substring(0, action.length - 1);
+    }
+    if (action.endsWith('?server_name')) {
+      // This can be removed after matrix_api_lite is released with:
+      // https://gitlab.com/famedly/libraries/matrix_api_lite/-/merge_requests/16
+      action = action.substring(0, action.length - 12);
+    }
+    if (action.endsWith('/')) {
+      action = action.substring(0, action.length - 1);
+    }
+    final method = request.method;
+    final dynamic data =
+        method == 'GET' ? request.url.queryParameters : request.body;
+    dynamic res = {};
+    var statusCode = 200;
+
+    //print('\$method request to $action with Data: $data');
+
+    // Sync requests with timeout
+    if (data is Map<String, dynamic> && data['timeout'] is String) {
+      await Future.delayed(Duration(seconds: 5));
+    }
+
+    if (request.url.origin != 'https://fakeserver.notexisting') {
+      return Response(
+          '<html><head></head><body>Not found...</body></html>', 404);
+    }
+
+    if (!{
+          '/client/v3/refresh',
+          '/client/v3/login',
+          '/client/v3/register',
+        }.contains(action) &&
+        expectedAccessToken != null &&
+        request.headers['Authorization'] != 'Bearer $expectedAccessToken') {
+      return Response(
+        jsonEncode({
+          'errcode': 'M_UNKNOWN_TOKEN',
+          'error': 'Soft logged out',
+          'soft_logout': true,
+        }),
+        401,
+      );
+    }
+
+    // Call API
+    (_calledEndpoints[action] ??= <dynamic>[]).add(data);
+    final act = api[method]?[action];
+    if (act != null) {
+      res = act(data);
+      if (res is Map && res.containsKey('errcode')) {
+        if (res['errcode'] == 'M_NOT_FOUND') {
+          statusCode = 404;
+        } else {
+          statusCode = 405;
+        }
+      }
+    } else if (method == 'PUT' && action.contains('/client/v3/sendToDevice/')) {
+      res = {};
+      if (_failToDevice) {
+        statusCode = 500;
+      }
+    } else if (method == 'GET' &&
+        action.contains('/client/v3/rooms/') &&
+        action.contains('/state/m.room.member/') &&
+        !action.endsWith('%40alicyy%3Aexample.com')) {
+      res = {'displayname': ''};
+    } else if (method == 'PUT' &&
+        action.contains(
+            '/client/v3/rooms/!1234%3AfakeServer.notExisting/send/')) {
+      res = {'event_id': '\$event${_eventCounter++}'};
+    } else if (method == 'PUT' &&
+        action.contains(
+            '/client/v3/rooms/!1234%3AfakeServer.notExisting/state/')) {
+      res = {'event_id': '\$event${_eventCounter++}'};
+    } else if (action.contains('/client/v3/sync')) {
+      res = {
+        'next_batch': DateTime.now().millisecondsSinceEpoch.toString(),
+      };
+    } else if (method == 'PUT' &&
+        _client != null &&
+        action.contains('/account_data/') &&
+        !action.contains('/rooms/')) {
+      final type = Uri.decodeComponent(action.split('/').last);
+      final syncUpdate = sdk.SyncUpdate(
+        nextBatch: '',
+        accountData: [sdk.BasicEvent(content: decodeJson(data), type: type)],
+      );
+      if (_client?.database != null) {
+        await _client?.database?.transaction(() async {
+          await _client?.handleSync(syncUpdate);
         });
+      } else {
+        await _client?.handleSync(syncUpdate);
+      }
+      res = {};
+    } else if (method == 'PUT' &&
+        _client != null &&
+        action.contains('/account_data/') &&
+        action.contains('/rooms/')) {
+      final segments = action.split('/');
+      final type = Uri.decodeComponent(segments.last);
+      final roomId = Uri.decodeComponent(segments[segments.length - 3]);
+      final syncUpdate = sdk.SyncUpdate(
+        nextBatch: '',
+        rooms: RoomsUpdate(
+          join: {
+            roomId: JoinedRoomUpdate(accountData: [
+              sdk.BasicRoomEvent(
+                  content: decodeJson(data), type: type, roomId: roomId)
+            ])
+          },
+        ),
+      );
+      if (_client?.database != null) {
+        await _client?.database?.transaction(() async {
+          await _client?.handleSync(syncUpdate);
+        });
+      } else {
+        await _client?.handleSync(syncUpdate);
+      }
+      res = {};
+    } else {
+      res = {
+        'errcode': 'M_UNRECOGNIZED',
+        'error': 'Unrecognized request: $action'
+      };
+      statusCode = 405;
+    }
 
-  static Map<String, Object?> messagesResponse = {
+    unawaited(Future.delayed(Duration(milliseconds: 1)).then((_) async {
+      _apiCallStream.add(action);
+    }));
+    return Response.bytes(utf8.encode(json.encode(res)), statusCode);
+  }
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) async {
+    final bodyStream = request.finalize();
+    final bodyBytes = await bodyStream.toBytes();
+    final r = Request(request.method, request.url)
+      ..persistentConnection = request.persistentConnection
+      ..followRedirects = request.followRedirects
+      ..maxRedirects = request.maxRedirects
+      ..headers.addAll(request.headers)
+      ..bodyBytes = bodyBytes
+      ..finalize();
+
+    final response = await mockIntercept(r);
+    return StreamedResponse(
+      ByteStream.fromBytes(response.bodyBytes),
+      response.statusCode,
+      contentLength: response.contentLength,
+      request: request,
+      headers: response.headers,
+      isRedirect: response.isRedirect,
+      persistentConnection: response.persistentConnection,
+      reasonPhrase: response.reasonPhrase,
+    );
+  }
+
+  FakeMatrixApi() {
+    currentApi = this;
+    api['POST']?['/client/v3/keys/device_signing/upload'] = (var reqI) {
+      if (_client != null) {
+        final jsonBody = decodeJson(reqI);
+        for (final keyType in {
+          'master_key',
+          'self_signing_key',
+          'user_signing_key'
+        }) {
+          if (jsonBody[keyType] != null) {
+            final key =
+                sdk.CrossSigningKey.fromJson(jsonBody[keyType], _client!);
+            _client!.userDeviceKeys[_client!.userID!]?.crossSigningKeys
+                .removeWhere((k, v) => v.usage.contains(key.usage.first));
+            _client!.userDeviceKeys[_client!.userID!]
+                ?.crossSigningKeys[key.publicKey!] = key;
+          }
+        }
+        // and generate a fake sync
+        // ignore: discarded_futures
+        _client!.handleSync(sdk.SyncUpdate(nextBatch: ''));
+      }
+      return {};
+    };
+  }
+
+  static const Map<String, dynamic> messagesResponsePast = {
     'start': 't47429-4392820_219380_26003_2265',
     'end': 't47409-4357353_219380_26003_2265',
     'chunk': [
@@ -172,17 +347,140 @@ class FakeMatrixApi extends MockClient {
         'unsigned': {'age': 1234}
       }
     ],
-    'state': <Map<String, Object?>>[],
+    'state': [],
+  };
+  static const Map<String, dynamic> messagesResponseFuture = {
+    'start': 't456',
+    'end': 't789',
+    'chunk': [
+      {
+        'content': {
+          'body': 'Gangnam Style',
+          'url': 'mxc://example.org/a526eYUSFFxlgbQYZmo442',
+          'info': {
+            'thumbnail_url': 'mxc://example.org/FHyPlCeYUSFFxlgbQYZmoEoe',
+            'thumbnail_info': {
+              'mimetype': 'image/jpeg',
+              'size': 46144,
+              'w': 300,
+              'h': 300
+            },
+            'w': 480,
+            'h': 320,
+            'duration': 2140786,
+            'size': 1563685,
+            'mimetype': 'video/mp4'
+          },
+          'msgtype': 'm.video'
+        },
+        'type': 'm.room.message',
+        'event_id': '1143273582443PhrSn:example.org',
+        'room_id': '!1234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824653,
+        'unsigned': {'age': 1234}
+      },
+      {
+        'content': {'name': 'The room name'},
+        'type': 'm.room.name',
+        'event_id': '2143273582443PhrSn:example.org',
+        'room_id': '!1234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824653,
+        'unsigned': {'age': 1234},
+        'state_key': ''
+      },
+      {
+        'content': {
+          'body': 'This is an example text message',
+          'msgtype': 'm.text',
+          'format': 'org.matrix.custom.html',
+          'formatted_body': '<b>This is an example text message</b>'
+        },
+        'type': 'm.room.message',
+        'event_id': '3143273582443PhrSn:example.org',
+        'room_id': '!1234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824653,
+        'unsigned': {'age': 1234}
+      }
+    ],
+    'state': [],
+  };
+  static const Map<String, dynamic> messagesResponseFutureEnd = {
+    'start': 't789',
+    'end': null,
+    'chunk': [],
+    'state': [],
   };
 
-  static Map<String, Object?> syncResponse = {
+  static Map<String, dynamic> archivesMessageResponse = {
+    'start': 't47429-4392820_219380_26003_2265',
+    'end': 't47409-4357353_219380_26003_2265',
+    'chunk': [
+      {
+        'content': {
+          'body': 'This is an example text message',
+          'msgtype': 'm.text',
+          'format': 'org.matrix.custom.html',
+          'formatted_body': '<b>This is an example text message</b>'
+        },
+        'type': 'm.room.message',
+        'event_id': '3143273582443PhrSn:example.org',
+        'room_id': '!5345234234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824653,
+        'unsigned': {'age': 1234}
+      },
+      {
+        'content': {'name': 'The room name'},
+        'type': 'm.room.name',
+        'event_id': '2143273582443PhrSn:example.org',
+        'room_id': '!5345234234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824653,
+        'unsigned': {'age': 1234},
+        'state_key': ''
+      },
+      {
+        'content': {
+          'body': 'Gangnam Style',
+          'url': 'mxc://example.org/a526eYUSFFxlgbQYZmo442',
+          'info': {
+            'thumbnail_url': 'mxc://example.org/FHyPlCeYUSFFxlgbQYZmoEoe',
+            'thumbnail_info': {
+              'mimetype': 'image/jpeg',
+              'size': 46144,
+              'w': 300,
+              'h': 300
+            },
+            'w': 480,
+            'h': 320,
+            'duration': 2140786,
+            'size': 1563685,
+            'mimetype': 'video/mp4'
+          },
+          'msgtype': 'm.video'
+        },
+        'type': 'm.room.message',
+        'event_id': '1143273582466PhrSn:example.org',
+        'room_id': '!5345234234:example.com',
+        'sender': '@example:example.org',
+        'origin_server_ts': 1432735824654,
+        'unsigned': {'age': 1234}
+      }
+    ],
+    'state': [],
+  };
+
+  static Map<String, dynamic> syncResponse = {
     'next_batch': Random().nextDouble().toString(),
     'rooms': {
       'join': {
         '!726s6s6q:example.com': {
           'summary': {
-            'm.heroes': ['@alice:example.com', '@bob:example.com'],
-            'm.joined_member_count': 2,
+            'm.heroes': ['@alice:example.com'],
+            'm.joined_member_count': 1,
             'm.invited_member_count': 0
           },
           'unread_notifications': {
@@ -244,7 +542,7 @@ class FakeMatrixApi extends MockClient {
                 'content': {'membership': 'join'},
                 'prev_content': {'membership': 'invite'},
                 'origin_server_ts': 1417731086795,
-                'event_id': '7365636s6r6432:example.com',
+                'event_id': '\$7365636s6r6432:example.com',
                 'unsigned': {'foo': 'bar'}
               },
               {
@@ -268,7 +566,7 @@ class FakeMatrixApi extends MockClient {
               },
               {
                 'content': {
-                  '7365636s6r6432:example.com': {
+                  '\$7365636s6r6432:example.com': {
                     'm.read': {
                       '@alice:example.com': {'ts': 1436451550453}
                     }
@@ -295,7 +593,37 @@ class FakeMatrixApi extends MockClient {
               }
             ]
           }
-        }
+        },
+        '!calls:example.com': {
+          'state': {
+            'events': [
+              {
+                'sender': '@test:fakeServer.notExisting',
+                'type': 'm.room.member',
+                'state_key': '@test:fakeServer.notExisting',
+                'content': {
+                  'membership': 'join',
+                  'avatar_url': 'mxc://example.org/SEsfnsuifSDFSSEF',
+                  'displayname': 'Test User',
+                },
+                'origin_server_ts': 1417731086795,
+                'event_id': 'calls_1:example.com'
+              },
+              {
+                'sender': '@alice:example.com',
+                'type': 'm.room.member',
+                'state_key': '@alice:example.com',
+                'content': {
+                  'membership': 'join',
+                  'avatar_url': 'mxc://example.org/SEsfnsuifSDFSSEF',
+                  'displayname': 'Alice Margatroid',
+                },
+                'origin_server_ts': 1417731086795,
+                'event_id': 'calls_2:example.com'
+              },
+            ]
+          },
+        },
       },
       'invite': {
         '!696r7674:example.com': {
@@ -394,7 +722,7 @@ class FakeMatrixApi extends MockClient {
               'override': [
                 {
                   'actions': ['dont_notify'],
-                  'conditions': <Map<String, Object?>>[],
+                  'conditions': [],
                   'default': true,
                   'enabled': false,
                   'rule_id': '.m.rule.master'
@@ -428,7 +756,7 @@ class FakeMatrixApi extends MockClient {
                   'rule_id': '!localpart:server.abc'
                 }
               ],
-              'sender': <Map<String, Object?>>[],
+              'sender': [],
               'underride': [
                 {
                   'actions': [
@@ -623,6 +951,18 @@ class FakeMatrixApi extends MockClient {
               }
             }
           }
+        },
+        {
+          'type': 'io.element.recent_emoji',
+          'content': {
+            'recent_emoji': [
+              ['👍️', 1],
+              ['🖇️', 0],
+              ['🙃', 'error'],
+              [null, null],
+              [1, '']
+            ]
+          }
         }
       ]
     },
@@ -676,33 +1016,50 @@ class FakeMatrixApi extends MockClient {
     'device_one_time_keys_count': {'curve25519': 10, 'signed_curve25519': 20},
   };
 
-  static Map<String, Object?> archiveSyncResponse = {
+  static Map<String, dynamic> archiveSyncResponse = {
     'next_batch': Random().nextDouble().toString(),
-    'presence': {'events': <Map<String, Object?>>[]},
-    'account_data': {'events': <Map<String, Object?>>[]},
-    'to_device': {'events': <Map<String, Object?>>[]},
+    'presence': {'events': []},
+    'account_data': {'events': []},
+    'to_device': {'events': []},
     'rooms': {
-      'join': <String, Object?>{},
-      'invite': <String, Object?>{},
+      'join': {},
+      'invite': {},
       'leave': {
         '!5345234234:example.com': {
           'timeline': {
             'events': [
               {
                 'content': {
-                  'body': 'This is an example text message',
+                  'body': 'This is a second text example message',
                   'msgtype': 'm.text',
                   'format': 'org.matrix.custom.html',
-                  'formatted_body': '<b>This is an example text message</b>'
+                  'formatted_body':
+                      '<b>This is a second text example message</b>'
                 },
                 'type': 'm.room.message',
-                'event_id': '143273582443PhrSn:example.org',
+                'event_id': '143274597446PhrSn:example.org',
+                'room_id': '!5345234234:example.com',
+                'sender': '@example:example.org',
+                'origin_server_ts': 1432735824654,
+                'unsigned': {'age': 1234}
+              },
+              {
+                'content': {
+                  'body': 'This is a first text example message',
+                  'msgtype': 'm.text',
+                  'format': 'org.matrix.custom.html',
+                  'formatted_body':
+                      '<b>This is a first text example message</b>'
+                },
+                'type': 'm.room.message',
+                'event_id': '143274597443PhrSn:example.org',
                 'room_id': '!5345234234:example.com',
                 'sender': '@example:example.org',
                 'origin_server_ts': 1432735824653,
                 'unsigned': {'age': 1234}
-              },
-            ]
+              }
+            ],
+            'prev_batch': 't_1234a'
           },
           'state': {
             'events': [
@@ -728,7 +1085,7 @@ class FakeMatrixApi extends MockClient {
           },
         },
         '!5345234235:example.com': {
-          'timeline': {'events': <Map<String, Object?>>[]},
+          'timeline': {'events': []},
           'state': {
             'events': [
               {
@@ -742,240 +1099,34 @@ class FakeMatrixApi extends MockClient {
                 'state_key': ''
               },
             ]
-          }
+          },
+          'prev_batch': 't_1234b'
         },
       },
     }
   };
 
-  static Map<String, Object?> spaceHierarchyResponse = {
-    'rooms': [
-      {
-        'room_id': '!gPxZhKUssFZKZcoCKY:neko.dev',
-        'name': 'Gentoo Community',
-        'topic':
-            'Unofficial Gentoo community rooms. Please keep chatter to the chatter room and have Gentoo discussions and questions in the actual Gentoo rooms. Also listen to the mods and try to keep nasty stuff to yourself. Thank you!',
-        'canonical_alias': '#gentoo-community:matrix.org',
-        'num_joined_members': 71,
-        'avatar_url': 'mxc://neko.dev/YShzHcuHenkxaxostDrlMEYL',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': true,
-        'room_type': 'm.space',
-        'children_state': [
-          {
-            'type': 'm.space.child',
-            'state_key': '!UpbiadsgRndwvYKPLK:neko.dev',
-            'content': {
-              'via': ['neko.dev'],
-              'suggested': true,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1636376075316
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!aZUzMIEZvEwnDquxLf:neko.dev',
-            'content': {
-              'via': ['neko.dev', 'matrix.org', 'privacytools.io'],
-              'suggested': true,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1636378043231
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!aRzRZBvOAkHMcEjAPS:libera.chat',
-            'content': {
-              'via': ['libera.chat', 'kde.org', 'neko.dev'],
-              'suggested': false,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1637612945217
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!DXsRRxkqqDhDkAyXfL:matrix.org',
-            'content': {
-              'via': ['matrix.org', 'libera.chat', 'neko.dev'],
-              'suggested': false,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1637612945334
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!tbCRpmsMiwMBlIThOd:matrix.org',
-            'content': {
-              'via': ['kde.org', 'matrix.org', 'server.matrix4ulm.de'],
-              'suggested': false,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1637612945491
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!LPpmvMsEgDwuSuHSpM:matrix.org',
-            'content': {
-              'via': ['matrix.org', 'anontier.nl', 't2bot.io'],
-              'suggested': false,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1638720840346
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!prlZxmnmAGuCYHUNSw:neko.dev',
-            'content': {
-              'auto_join': false,
-              'suggested': true,
-              'via': ['neko.dev', 'matrix.org']
-            },
-            'sender': '@mo-the-alias-manager:matrix.org',
-            'origin_server_ts': 1645661824176
-          },
-          {
-            'type': 'm.space.child',
-            'state_key': '!ooHixUOgoLVUjCSMZC:matrix.org',
-            'content': {
-              'via': ['neko.dev'],
-              'suggested': false,
-              'auto_join': false
-            },
-            'sender': '@deepbluev7:neko.dev',
-            'origin_server_ts': 1647825979776
-          }
-        ]
-      },
-      {
-        'room_id': '!UpbiadsgRndwvYKPLK:neko.dev',
-        'name': 'Gentoo Chatter',
-        'topic':
-            'Offtopic discussions, distractions while emerge is running and banter. Keep attacks, politics and illegal stuff out of here, but otherwise most topics can end up here.',
-        'canonical_alias': '#gentoo-chatter:matrix.org',
-        'num_joined_members': 109,
-        'avatar_url': 'mxc://neko.dev/kGMWPCWawJbKGEtEGwCETSrM',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': true,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!aZUzMIEZvEwnDquxLf:neko.dev',
-        'name': 'Gentoo',
-        'topic':
-            "Unofficial. Talk about Gentoo stuff. Lightly moderated, i.e. try to keep topics Gentoo related and listen to the mods. Don't talk about politics, stuff like that never stays civil. (There are other rooms for that.) Checkout #gentoo-community:matrix.org and #gentoo-chatter:matrix.org. Also we love cats :3",
-        'canonical_alias': '#gentoo:matrix.org',
-        'num_joined_members': 1044,
-        'avatar_url': 'mxc://neko.dev/dESQaOugYSkcFgLJYPNlWiNg',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': true,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!aRzRZBvOAkHMcEjAPS:libera.chat',
-        'name': '#gentoo-qt',
-        'topic':
-            'Gentoo Qt Project | Project page: https://qt.gentoo.org/ | Bugz: https://tinyurl.com/genqtbugs | FAQ: https://bit.ly/1jz8EhK | Latest Qt Stable: 5.15.3 / Unstable 5.15.4 | LXQt Stable: 1.0.0 / Unstable: 1.1.0 | Overlay: qt (Qt 6.3.0 Masked for Testing and 9999s for All)',
-        'canonical_alias': '#gentoo-qt:libera.chat',
-        'num_joined_members': 72,
-        'join_rule': 'public',
-        'world_readable': false,
-        'guest_can_join': false,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!DXsRRxkqqDhDkAyXfL:matrix.org',
-        'name': 'Gentoo - de',
-        'topic':
-            'Deutschsprachiger Raum rund um die GNU/Linux Distribution Gentoo.',
-        'canonical_alias': '#german-gentoo:matrix.org',
-        'num_joined_members': 15,
-        'avatar_url': 'mxc://matrix.org/UDJIpOEsVDGbgAliaxjqmhlf',
-        'join_rule': 'public',
-        'world_readable': false,
-        'guest_can_join': false,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!tbCRpmsMiwMBlIThOd:matrix.org',
-        'name': '#gentoo-kde',
-        'topic':
-            "Gentoo KDE | Guide: http://xrl.us/kdeguide | KF5 5.54.0 stable, 5.56.0 testing | Plasma 5.14.5 stable, 5.15.3 testing | Applications 18.08.3 stable, 18.12.3 testing | Bugs: http://xrl.us/kdebugs | Statistics: https://tinyurl.com/gkdestats | Please report bugs with pastebin'd build.log",
-        'canonical_alias': '#freenode_#gentoo-kde:matrix.org',
-        'num_joined_members': 86,
-        'join_rule': 'public',
-        'world_readable': false,
-        'guest_can_join': false,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!LPpmvMsEgDwuSuHSpM:matrix.org',
-        'name': 'Gentoo-rus (Русский/Russian)',
-        'topic': 'Вопросы по Gentoo',
-        'canonical_alias': '#gentoo-rus:matrix.org',
-        'num_joined_members': 68,
-        'avatar_url': 'mxc://matrix.org/KuRHZNSQttAmQekputXpXmeQ',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': true,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!prlZxmnmAGuCYHUNSw:neko.dev',
-        'name': 'Gentoo Hardening',
-        'topic':
-            'If you care too much about security and Gentoo, this is your place to talk about it. Bring your hard hats, it sometimes gets heated (please behave). (Unofficial)',
-        'canonical_alias': '#gentoo-hardening:matrix.org',
-        'num_joined_members': 47,
-        'avatar_url': 'mxc://neko.dev/MMDsJENimfwQlHshSkdFlDaU',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': false,
-        'children_state': <Map<String, Object?>>[]
-      },
-      {
-        'room_id': '!ooHixUOgoLVUjCSMZC:matrix.org',
-        'name': 'Gentoo Brasil',
-        'topic': 'Usuários brasileiros do Gentoo Linux',
-        'canonical_alias': '#gentoobr:matrix.org',
-        'num_joined_members': 35,
-        'avatar_url': 'mxc://matrix.org/vXqGcGnyUbIjhXAalSxfDxJD',
-        'join_rule': 'public',
-        'world_readable': true,
-        'guest_can_join': true,
-        'children_state': <Map<String, Object?>>[]
-      }
-    ]
-  };
-
-  static final Map<String, Map<String, Object? Function(dynamic)>> api = {
+  Map<String, Map<String, dynamic>> api = {
     'GET': {
       '/path/to/auth/error': (var req) => {
             'errcode': 'M_FORBIDDEN',
             'error': 'Blabla',
           },
       '/media/v3/preview_url?url=https%3A%2F%2Fmatrix.org&ts=10': (var req) => {
+            'og:title': 'Matrix Blog Post',
+            'og:description': 'This is a really cool blog post from matrix.org',
             'og:image': 'mxc://example.com/ascERGshawAWawugaAcauga',
+            'og:image:type': 'image/png',
+            'og:image:height': 48,
+            'og:image:width': 48,
             'matrix:image:size': 102400
           },
       '/media/v3/config': (var req) => {'m.upload.size': 50000000},
       '/.well-known/matrix/client': (var req) => {
-            'm.homeserver': {
-              'base_url': 'https://fakeserver.notexisting',
-            },
-            'm.identity_server': {
-              'base_url': 'https://identity.fakeserver.notexisting'
-            },
+            'm.homeserver': {'base_url': 'https://matrix.example.com'},
+            'm.identity_server': {'base_url': 'https://identity.example.com'},
             'org.example.custom.property': {
-              'app_url': 'https://custom.app.fakeserver.notexisting'
+              'app_url': 'https://custom.app.example.org'
             }
           },
       '/client/v3/user/%40alice%3Aexample.com/rooms/!localpart%3Aexample.com/tags':
@@ -983,10 +1134,10 @@ class FakeMatrixApi extends MockClient {
                 'tags': {
                   'm.favourite': {'order': 0.1},
                   'u.Work': {'order': 0.7},
-                  'u.Customers': <String, Object?>{},
+                  'u.Customers': {}
                 }
               },
-      '/client/v3/events?from=1234&timeout=10&room_id=%211234': (var req) => {
+      '/client/v3/events?from=1234&timeout=10&roomId=%211234': (var req) => {
             'start': 's3456_9_0',
             'end': 's3457_9_0',
             'chunk': [
@@ -1093,7 +1244,7 @@ class FakeMatrixApi extends MockClient {
                   'network_id': 'gitter',
                   'desc': 'Gitter',
                   'icon': 'mxc://example.org/zXyWvUt',
-                  'fields': <String, Object?>{}
+                  'fields': {}
                 }
               ]
             }
@@ -1115,7 +1266,7 @@ class FakeMatrixApi extends MockClient {
               'com.example.custom.ratelimit': {'max_requests_per_hour': 600}
             }
           },
-      '/client/v3/rooms/1234/context/1234?limit=10&filter=%7B%7D': (var req) =>
+      '/client/v3/rooms/1234/context/1234?filter=%7B%7D&limit=10': (var req) =>
           {
             'end': 't29-57_2_0_2',
             'events_after': [
@@ -1290,6 +1441,8 @@ class FakeMatrixApi extends MockClient {
             'last_seen_ip': '1.2.3.4',
             'last_seen_ts': 1474491775024
           },
+      '/client/v3/profile/%40test%3AfakeServer.notExisting': (var reqI) =>
+          {'displayname': 'Some First Name Some Last Name'},
       '/client/v3/profile/%40alice%3Aexample.com/displayname': (var reqI) =>
           {'displayname': 'Alice M'},
       '/client/v3/profile/%40alice%3Aexample.com/avatar_url': (var reqI) =>
@@ -1340,6 +1493,7 @@ class FakeMatrixApi extends MockClient {
           (var req) => {
                 'chunk': [
                   {
+                    'aliases': ['#murrays:cheese.bar'],
                     'canonical_alias': '#murrays:cheese.bar',
                     'avatar_url': 'mxc://bleeker.street/CHEDDARandBRIE',
                     'guest_can_join': false,
@@ -1354,7 +1508,7 @@ class FakeMatrixApi extends MockClient {
                 'prev_batch': 'p1902',
                 'total_room_count_estimate': 115
               },
-      '/client/v3/rooms/!localpart%3Aexample.com/aliases': (var req) => {
+      '/client/v3/room/!localpart%3Aexample.com/aliases': (var req) => {
             'aliases': [
               '#somewhere:example.com',
               '#another:example.com',
@@ -1475,20 +1629,59 @@ class FakeMatrixApi extends MockClient {
             'origin_server_ts': 1432735824653,
             'unsigned': {'age': 1234}
           },
-      '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=1234&to=1234&dir=b&limit=10&filter=%7B%22lazy_load_members%22%3Atrue%7D':
-          (var req) => messagesResponse,
+      '/client/v3/rooms/!1234%3Aexample.com/event/not_found': (var req) => {
+            'errcode': 'M_NOT_FOUND',
+            'error': 'Event not found',
+          },
+      '/client/v3/rooms/!1234%3Aexample.com/event/unencrypted_event':
+          (var req) => {
+                'content': {
+                  'body': 'This is an example text message',
+                  'msgtype': 'm.text',
+                  'format': 'org.matrix.custom.html',
+                  'formatted_body': '<b>This is an example text message</b>'
+                },
+                'type': 'm.room.message',
+                'event_id': '143273582443PhrSn:example.org',
+                'room_id': '!localpart:server.abc',
+                'sender': '@example:example.org',
+                'origin_server_ts': 1432735824653,
+                'unsigned': {'age': 1234}
+              },
+      '/client/v3/rooms/!1234%3Aexample.com/event/encrypted_event': (var req) =>
+          {
+            'content': {
+              'algorithm': 'm.megolm.v1.aes-sha2',
+              'ciphertext': 'invalid',
+              'device_id': 'SOME_DEVICE',
+              'sender_key': 'invalid',
+              'session_id': 'not_found'
+            },
+            'type': 'm.room.encrypted',
+            'event_id': '143273582443PhrSn:example.org',
+            'room_id': '!localpart:server.abc',
+            'sender': '@example:example.org',
+            'origin_server_ts': 1432735824653,
+            'unsigned': {'age': 1234}
+          },
+      '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=1234&dir=b&to=1234&limit=10&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponsePast,
       '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=&dir=b&limit=10&filter=%7B%22lazy_load_members%22%3Atrue%7D':
-          (var req) => messagesResponse,
-      '/client/v3/rooms/!1234%3Aexample.com/messages?from=1234&dir=b&limit=100&filter=%7B%22lazy_load_members%22%3Atrue%7D':
-          (var req) => messagesResponse,
+          (var req) => messagesResponsePast,
+      '/client/v3/rooms/!1234%3Aexample.com/messages?from=1234&dir=b&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponsePast,
+      '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=t456&dir=f&to=1234&limit=10&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponseFuture,
+      '/client/v3/rooms/!1234%3Aexample.com/messages?from=t456&dir=f&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponseFuture,
+      '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=t789&dir=f&to=1234&limit=10&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponseFutureEnd,
+      '/client/v3/rooms/!1234%3Aexample.com/messages?from=t789&dir=f&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => messagesResponseFutureEnd,
+      '/client/v3/rooms/!5345234234%3Aexample.com/messages?from=t_1234a&dir=b&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
+          (var req) => archivesMessageResponse,
       '/client/versions': (var req) => {
             'versions': [
-              'r0.0.1',
-              'r0.1.0',
-              'r0.2.0',
-              'r0.3.0',
-              'r0.4.0',
-              'r0.5.0',
               'v1.1',
               'v1.2',
             ],
@@ -1544,7 +1737,7 @@ class FakeMatrixApi extends MockClient {
               }
             ]
           },
-      '/client/v3/rooms/!726s6s6q:example.com/members': (var req) => {
+      '/client/v3/rooms/!726s6s6q%3Aexample.com/members': (var req) => {
             'chunk': [
               {
                 'content': {
@@ -1611,7 +1804,7 @@ class FakeMatrixApi extends MockClient {
               'override': [
                 {
                   'actions': ['dont_notify'],
-                  'conditions': <Map<String, Object?>>[],
+                  'conditions': [],
                   'default': true,
                   'enabled': false,
                   'rule_id': '.m.rule.master'
@@ -1630,8 +1823,8 @@ class FakeMatrixApi extends MockClient {
                   'rule_id': '.m.rule.suppress_notices'
                 }
               ],
-              'room': <Map<String, Object?>>[],
-              'sender': <Map<String, Object?>>[],
+              'room': [],
+              'sender': [],
               'underride': [
                 {
                   'actions': [
@@ -1740,13 +1933,12 @@ class FakeMatrixApi extends MockClient {
           },
       '/client/v3/sync?filter=%7B%22room%22%3A%7B%22include_leave%22%3Atrue%2C%22timeline%22%3A%7B%22limit%22%3A10%7D%7D%7D&timeout=0':
           (var req) => archiveSyncResponse,
-      '/client/v3/sync?filter=%7B%22room%22%3A%7B%22state%22%3A%7B%22lazy_load_members%22%3Atrue%7D%7D%7D':
-          (var req) => syncResponse,
-      '/client/v3/sync?filter=%7B%7D&since=1234&full_state=false&set_presence=unavailable&timeout=15':
+      '/client/v3/sync?filter=1234&timeout=0': (var req) => syncResponse,
+      '/client/v3/sync?filter=1234&since=1234&full_state=false&set_presence=unavailable&timeout=15':
           (var req) => syncResponse,
       '/client/v3/register/available?username=testuser': (var req) =>
           {'available': true},
-      '/client/v3/user/${Uri.encodeComponent('alice@example.com')}/filter/1234':
+      '/client/v3/user/${Uri.encodeComponent('@test:fakeServer.notExisting')}/filter/1234':
           (var req) => {
                 'room': {
                   'state': {
@@ -1781,7 +1973,7 @@ class FakeMatrixApi extends MockClient {
             'algorithm': AlgorithmTypes.megolmBackupV1Curve25519AesSha2,
             'auth_data': {
               'public_key': 'GXYaxqhNhUK28zUdxOmEsFRguz+PzBsDlTLlF0O0RkM',
-              'signatures': <String, Object?>{},
+              'signatures': {},
             },
             'count': 0,
             'etag': '0',
@@ -1799,7 +1991,7 @@ class FakeMatrixApi extends MockClient {
                   'mac': 'QzKV/fgAs4U',
                 },
               },
-      '/client/v3/room_keys/keys/${Uri.encodeComponent('!726s6s6q:example.com')}?version=5':
+      '/client/v3/room_keys/keys/${Uri.encodeComponent('!getroomkeys726s6s6q:example.com')}?version=5':
           (var req) => {
                 'sessions': {
                   'ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU': {
@@ -1818,7 +2010,7 @@ class FakeMatrixApi extends MockClient {
               },
       '/client/v3/room_keys/keys?version=5': (var req) => {
             'rooms': {
-              '!726s6s6q:example.com': {
+              '!getallkeys726s6s6q:example.com': {
                 'sessions': {
                   'ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU': {
                     'first_message_index': 0,
@@ -1836,19 +2028,26 @@ class FakeMatrixApi extends MockClient {
               },
             },
           },
-      '/client/v1/rooms/${Uri.encodeComponent('!gPxZhKUssFZKZcoCKY:neko.dev')}/hierarchy':
-          (var req) => spaceHierarchyResponse,
+      '/client/unstable/org.matrix.msc3814.v1/dehydrated_device': (var _) => {
+            'device_id': 'DEHYDDEV',
+            'device_data': {'algorithm': 'some.famedly.proprietary.algorithm'},
+          },
     },
     'POST': {
-      '/client/v3/delete_devices': (var req) => <String, Object?>{},
-      '/client/v3/account/3pid/add': (var req) => <String, Object?>{},
-      '/client/v3/account/3pid/bind': (var req) => <String, Object?>{},
+      '/client/v3/refresh': (var req) => {
+            'access_token': 'a_new_token',
+            'expires_in_ms': 1000 * 60 * 5,
+            'refresh_token': 'another_new_token'
+          },
+      '/client/v3/delete_devices': (var req) => {},
+      '/client/v3/account/3pid/add': (var req) => {},
+      '/client/v3/account/3pid/bind': (var req) => {},
       '/client/v3/account/3pid/delete': (var req) =>
           {'id_server_unbind_result': 'success'},
       '/client/v3/account/3pid/unbind': (var req) =>
           {'id_server_unbind_result': 'success'},
-      '/client/v3/account/password': (var req) => <String, Object?>{},
-      '/client/v3/rooms/1234/report/1234': (var req) => <String, Object?>{},
+      '/client/v3/account/password': (var req) => {},
+      '/client/v3/rooms/1234/report/1234': (var req) => {},
       '/client/v3/search': (var req) => {
             'search_categories': {
               'room_events': {
@@ -1924,14 +2123,17 @@ class FakeMatrixApi extends MockClient {
             'submit_url': 'https://example.org/path/to/submitToken'
           },
       '/client/v3/rooms/!localpart%3Aexample.com/receipt/m.read/%241234%3Aexample.com':
-          (var req) => <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/read_markers': (var req) =>
-          <String, Object?>{},
-      '/client/v3/user/${Uri.encodeComponent('alice@example.com')}/filter':
+          (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/read_markers': (var req) => {},
+      '/client/v3/rooms/!1234%3Aexample.com/read_markers': (var req) => {},
+      '/client/v3/user/${Uri.encodeComponent('@othertest:fakeServer.notExisting')}/filter':
+          (var req) => {'filter_id': '1234'},
+      '/client/v3/user/${Uri.encodeComponent('@test:fakeServer.notExisting')}/filter':
           (var req) => {'filter_id': '1234'},
       '/client/v3/publicRooms?server=example.com': (var req) => {
             'chunk': [
               {
+                'aliases': ['#murrays:cheese.bar'],
                 'canonical_alias': '#murrays:cheese.bar',
                 'avatar_url': 'mxc://bleeker.street/CHEDDARandBRIE',
                 'guest_can_join': false,
@@ -1946,63 +2148,60 @@ class FakeMatrixApi extends MockClient {
             'prev_batch': 'p1902',
             'total_room_count_estimate': 115
           },
-      '/client/v3/keys/claim': (dynamic req) {
-        final request = decodeJson(req)['one_time_keys'];
-        final keys = (request is Map<String, Object?>)
-            ? request['one_time_keys'] as Map<String, Object?>?
-            : null;
-        return {
-          'failures': <String, Object?>{},
-          'one_time_keys': {
-            if (keys?['@alice:example.com'] != null)
-              '@alice:example.com': {
-                'JLAFKJWSCS': {
-                  'signed_curve25519:AAAAAQ': {
-                    'key': 'ikMXajRlkS7Xi9CROrAh3jXnbygk8mLBdSaY9/al0X0',
-                    'signatures': {
-                      '@alice:example.com': {
-                        'ed25519:JLAFKJWSCS':
-                            'XdboCa0Ljoh0Y0i/IVnmMqy/+T1hJyu8BA/nRYniJMQ7QWh/pGS5AsWswdARD+MAX+r4u98Qzk0y27HUddZXDA'
+      '/client/v3/keys/claim': (var req) => {
+            'failures': {},
+            'one_time_keys': {
+              if (decodeJson(req)['one_time_keys']['@alice:example.com'] !=
+                  null)
+                '@alice:example.com': {
+                  'JLAFKJWSCS': {
+                    'signed_curve25519:AAAAAQ': {
+                      'key': 'ikMXajRlkS7Xi9CROrAh3jXnbygk8mLBdSaY9/al0X0',
+                      'signatures': {
+                        '@alice:example.com': {
+                          'ed25519:JLAFKJWSCS':
+                              'XdboCa0Ljoh0Y0i/IVnmMqy/+T1hJyu8BA/nRYniJMQ7QWh/pGS5AsWswdARD+MAX+r4u98Qzk0y27HUddZXDA'
+                        }
                       }
                     }
                   }
-                }
-              },
-            if (keys?['@test:fakeServer.notExisting'] != null)
-              '@test:fakeServer.notExisting': {
-                'GHTYAJCE': {
-                  'signed_curve25519:AAAAAQ': {
-                    'key': 'qc72ve94cA28iuE0fXa98QO3uls39DHWdQlYyvvhGh0',
-                    'signatures': {
-                      '@test:fakeServer.notExisting': {
-                        'ed25519:GHTYAJCE':
-                            'dFwffr5kTKefO7sjnWLMhTzw7oV31nkPIDRxFy5OQT2OP5++Ao0KRbaBZ6qfuT7lW1owKK0Xk3s7QTBvc/eNDA',
+                },
+              if (decodeJson(req)['one_time_keys']
+                      ['@test:fakeServer.notExisting'] !=
+                  null)
+                '@test:fakeServer.notExisting': {
+                  'GHTYAJCE': {
+                    'signed_curve25519:AAAAAQ': {
+                      'key': 'qc72ve94cA28iuE0fXa98QO3uls39DHWdQlYyvvhGh0',
+                      'signatures': {
+                        '@test:fakeServer.notExisting': {
+                          'ed25519:GHTYAJCE':
+                              'dFwffr5kTKefO7sjnWLMhTzw7oV31nkPIDRxFy5OQT2OP5++Ao0KRbaBZ6qfuT7lW1owKK0Xk3s7QTBvc/eNDA',
+                        },
                       },
                     },
                   },
                 },
-              },
-          }
-        };
-      },
-      '/client/v3/rooms/!localpart%3Aexample.com/invite': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/leave': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/forget': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/kick': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/kick': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/ban': (var req) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aexample.com/unban': (var req) =>
-          <String, Object?>{},
+            }
+          },
+      '/client/v3/rooms/!localpart%3Aexample.com/invite': (var req) => {},
+      '/client/v3/rooms/!1234%3AfakeServer.notExisting/invite': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/leave': (var req) => {},
+      '/client/v3/rooms/!1234%3AfakeServer.notExisting/leave': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/forget': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aserver.abc/kick': (var req) => {},
+      '/client/v3/rooms/!1234%3AfakeServer.notExisting/kick': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/kick': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/ban': (var req) => {},
+      '/client/v3/rooms/!1234%3AfakeServer.notExisting/ban': (var req) => {},
+      '/client/v3/rooms/!localpart%3Aexample.com/unban': (var req) => {},
+      '/client/v3/rooms/!1234%3AfakeServer.notExisting/unban': (var req) => {},
       '/client/v3/rooms/!localpart%3Aexample.com/join': (var req) =>
           {'room_id': '!localpart:example.com'},
       '/client/v3/join/!localpart%3Aexample.com?server_name=example.com&server_name=example.abc':
           (var req) => {'room_id': '!localpart:example.com'},
+      '/client/v3/join/!newroom%3Aexample.com': (var req) =>
+          {'room_id': '!newroom%3A:example.com'},
       '/client/v3/keys/upload': (var req) => {
             'one_time_key_counts': {
               'curve25519': 10,
@@ -2015,7 +2214,7 @@ class FakeMatrixApi extends MockClient {
             }
           },
       '/client/v3/keys/query': (var req) => {
-            'failures': <String, Object?>{},
+            'failures': {},
             'device_keys': {
               '@alice:example.com': {
                 'JLAFKJWSCS': {
@@ -2137,15 +2336,16 @@ class FakeMatrixApi extends MockClient {
                   'ed25519:82mAXjsmbTbrE6zyShpR869jnrANO75H8nYY0nDLoJ8':
                       '82mAXjsmbTbrE6zyShpR869jnrANO75H8nYY0nDLoJ8',
                 },
-                'signatures': <String, Object?>{},
+                'signatures': {},
               },
               '@othertest:fakeServer.notExisting': {
                 'user_id': '@othertest:fakeServer.notExisting',
                 'usage': ['master'],
                 'keys': {
-                  'ed25519:master': 'master',
+                  'ed25519:92mAXjsmbTbrE6zyShpR869jnrANO75H8nYY0nDLoJ8':
+                      '92mAXjsmbTbrE6zyShpR869jnrANO75H8nYY0nDLoJ8',
                 },
-                'signatures': <String, Object?>{},
+                'signatures': {},
               },
             },
             'self_signing_keys': {
@@ -2169,7 +2369,7 @@ class FakeMatrixApi extends MockClient {
                 'keys': {
                   'ed25519:self_signing': 'self_signing',
                 },
-                'signatures': <String, Object?>{},
+                'signatures': {},
               },
             },
             'user_signing_keys': {
@@ -2193,7 +2393,7 @@ class FakeMatrixApi extends MockClient {
                 'keys': {
                   'ed25519:user_signing': 'user_signing',
                 },
-                'signatures': <String, Object?>{},
+                'signatures': {},
               },
             },
           },
@@ -2206,14 +2406,12 @@ class FakeMatrixApi extends MockClient {
           {'user_id': '@testuser:example.com'},
       '/client/v3/register?kind=guest': (var req) =>
           {'user_id': '@testuser:example.com'},
-      '/client/v3/rooms/1234/upgrade': (var req) => {
-            'replacement_room': '!1234:fakeServer.notExisting',
-          },
+      '/client/v3/rooms/1234/upgrade': (var req) => {},
       '/client/v3/user/1234/openid/request_token': (var req) => {
             'access_token': 'SomeT0kenHere',
             'token_type': 'Bearer',
             'matrix_server_name': 'example.com',
-            'expires_in': 3600
+            'expires_in': 3600.0
           },
       '/client/v3/user/@test:fakeServer.notExisting/openid/request_token':
           (var req) => {
@@ -2225,6 +2423,7 @@ class FakeMatrixApi extends MockClient {
       '/client/v3/login': (var req) => {
             'user_id': '@test:fakeServer.notExisting',
             'access_token': 'abc123',
+            'refresh_token': 'refresh_abc123',
             'device_id': 'GHTYAJCE',
             'well_known': {
               'm.homeserver': {'base_url': 'https://example.org'},
@@ -2233,64 +2432,95 @@ class FakeMatrixApi extends MockClient {
           },
       '/media/v3/upload?filename=file.jpeg': (var req) =>
           {'content_uri': 'mxc://example.com/AQwafuaFswefuhsfAFAgsw'},
-      '/client/v3/logout': (var reqI) => <String, Object?>{},
-      '/client/v3/pushers/set': (var reqI) => <String, Object?>{},
+      '/client/v3/logout': (var reqI) => {},
+      '/client/v3/pushers/set': (var reqI) => {},
       '/client/v3/join/1234': (var reqI) => {'room_id': '1234'},
-      '/client/v3/logout/all': (var reqI) => <String, Object?>{},
+      '/client/v3/logout/all': (var reqI) => {},
       '/client/v3/createRoom': (var reqI) => {
             'room_id': '!1234:fakeServer.notExisting',
           },
-      '/client/v3/rooms/!localpart%3Aserver.abc/read_markers': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart:server.abc/kick': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/ban': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/unban': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/invite': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/keys/device_signing/upload': (var reqI) {
-        return <String, Object?>{};
-      },
-      '/client/v3/keys/signatures/upload': (var reqI) =>
-          {'failures': <String, Object?>{}},
+      '/client/v3/rooms/!localpart%3Aserver.abc/read_markers': (var reqI) => {},
+      '/client/v3/rooms/!localpart:server.abc/kick': (var reqI) => {},
+      '/client/v3/rooms/!localpart%3Aserver.abc/ban': (var reqI) => {},
+      '/client/v3/rooms/!localpart%3Aserver.abc/unban': (var reqI) => {},
+      '/client/v3/rooms/!localpart%3Aserver.abc/invite': (var reqI) => {},
+      '/client/v3/keys/signatures/upload': (var reqI) => {'failures': {}},
       '/client/v3/room_keys/version': (var reqI) => {'version': '5'},
+      '/client/unstable/org.matrix.msc3814.v1/dehydrated_device/DEHYDDEV/events?limit=100':
+          (var _) => {
+                'events': [
+                  {
+                    // this is the commented out m.room_key event - only encrypted
+                    'sender': '@othertest:fakeServer.notExisting',
+                    'content': {
+                      'algorithm': AlgorithmTypes.olmV1Curve25519AesSha2,
+                      'sender_key':
+                          'JBG7ZaPn54OBC7TuIEiylW3BZ+7WcGQhFBPB9pogbAg',
+                      'ciphertext': {
+                        '7rvl3jORJkBiK4XX1e5TnGnqz068XfYJ0W++Ml63rgk': {
+                          'type': 0,
+                          'body':
+                              'Awogyh7K4iLUQjcOxIfi7q7LhBBqv9w0mQ6JI9+U9tv7iF4SIHC6xb5YFWf9voRnmDBbd+0vxD/xDlVNRDlPIKliLGkYGiAkEbtlo+fng4ELtO4gSLKVbcFn7tZwZCEUE8H2miBsCCKABgMKIFrKDJwB7gM3lXPt9yVoh6gQksafKt7VFCNRN5KLKqsDEAAi0AX5EfTV7jJ1ZWAbxftjoSN6kCVIxzGclbyg1HjchmNCX7nxNCHWl+q5ZgqHYZVu2n2mCVmIaKD0kvoEZeY3tV1Itb6zf67BLaU0qgW/QzHCHg5a44tNLjucvL2mumHjIG8k0BY2uh+52HeiMCvSOvtDwHg7nzCASGdqPVCj9Kzw6z7F6nL4e3mYim8zvJd7f+mD9z3ARrypUOLGkTGYbB2PQOovf0Do8WzcaRzfaUCnuu/YVZWKK7DPgG8uhw/TjR6XtraAKZysF+4DJYMG9SQWx558r6s7Z5EUOF5CU2M35w1t1Xxllb3vrS83dtf9LPCrBhLsEBeYEUBE2+bTBfl0BDKqLiB0Cc0N0ixOcHIt6e40wAvW622/gMgHlpNSx8xG12u0s6h6EMWdCXXLWd9fy2q6glFUHvA67A35q7O+M8DVml7Y9xG55Y3DHkMDc9cwgwFkBDCAYQe6pQF1nlKytcVCGREpBs/gq69gHAStMQ8WEg38Lf8u8eBr2DFexrN4U+QAk+S//P3fJgf0bQx/Eosx4fvWSz9En41iC+ADCsWQpMbwHn4JWvtAbn3oW0XmL/OgThTkJMLiCymduYAa1Hnt7a3tP0KTL2/x11F02ggQHL28cCjq5W4zUGjWjl5wo2PsKB6t8aAvMg2ujGD2rCjb4yrv5VIzAKMOZLyj7K0vSK9gwDLQ/4vq+QnKUBG5zrcOze0hX+kz2909/tmAdeCH61Ypw7gbPUJAKnmKYUiB/UgwkJvzMJSsk/SEs5SXosHDI+HsJHJp4Mp4iKD0xRMst+8f9aTjaWwh8ZvELE1ZOhhCbF3RXhxi3x2Nu8ORIz+vhEQ1NOlMc7UIo98Fk/96T36vL/fviowT4C/0AlaapZDJBmKwhmwqisMjY2n1vY29oM2p5BzY1iwP7q9BYdRFst6xwo57TNSuRwQw7IhFsf0k+ABuPEZy5xB5nPHyIRTf/pr3Hw',
+                        },
+                      },
+                    },
+                    'type': 'm.room.encrypted',
+                  },
+                ],
+                'next_batch': 'd1',
+              },
     },
     'PUT': {
+      '/client/v3/user/${Uri.encodeComponent('@alice:example.com')}/account_data/io.element.recent_emoji}':
+          (var req) => {},
+      '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/io.element.recent_emoji':
+          (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/m.ignored_user_list':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/presence/${Uri.encodeComponent('@alice:example.com')}/status':
-          (var req) => <String, Object?>{},
-      '/client/v3/pushrules/global/content/nocake/enabled': (var req) =>
-          <String, Object?>{},
-      '/client/v3/pushrules/global/content/nocake/actions': (var req) =>
-          <String, Object?>{},
+          (var req) => {},
+      '/client/v3/pushrules/global/content/nocake/enabled': (var req) => {},
+      '/client/v3/pushrules/global/content/nocake/actions': (var req) => {},
       '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.history_visibility':
-          (var req) => <String, Object?>{},
+          (var req) => {'event_id': '1234'},
       '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.join_rules':
-          (var req) => <String, Object?>{},
+          (var req) => {'event_id': '1234'},
       '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.guest_access':
-          (var req) => <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/send/m.call.invite/1234':
-          (var req) => <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/send/m.call.answer/1234':
-          (var req) => <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/send/m.call.candidates/1234':
-          (var req) => <String, Object?>{},
-      '/client/v3/rooms/!localpart%3Aserver.abc/send/m.call.hangup/1234':
-          (var req) => <String, Object?>{},
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.invite/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.answer/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.select_answer/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.reject/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.negotiate/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.candidates/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.hangup/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.replaces/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.asserted_identity/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/m.call.sdp_stream_metadata_changed/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/org.matrix.call.sdp_stream_metadata_changed/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!calls%3Aexample.com/send/org.matrix.call.asserted_identity/1234':
+          (var req) => {'event_id': '1234'},
       '/client/v3/rooms/!1234%3Aexample.com/redact/1143273582443PhrSn%3Aexample.org/1234':
           (var req) => {'event_id': '1234'},
       '/client/v3/pushrules/global/room/!localpart%3Aserver.abc': (var req) =>
-          <String, Object?>{},
+          {},
       '/client/v3/pushrules/global/override/.m.rule.master/enabled':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/pushrules/global/content/nocake?before=1&after=2':
-          (var req) => <String, Object?>{},
-      '/client/v3/devices/QBUAZIFURK': (var req) => <String, Object?>{},
-      '/client/v3/directory/room/%23testalias%3Aexample.com': (var reqI) =>
-          <String, Object?>{},
+          (var req) => {},
+      '/client/v3/devices/QBUAZIFURK': (var req) => {},
+      '/client/v3/directory/room/%23testalias%3Aexample.com': (var reqI) => {},
       '/client/v3/rooms/!localpart%3Aserver.abc/send/m.room.message/testtxid':
           (var reqI) => {
                 'event_id': '\$event${FakeMatrixApi.eventCounter++}',
@@ -2300,7 +2530,7 @@ class FakeMatrixApi extends MockClient {
                 'event_id': '\$event${FakeMatrixApi.eventCounter++}',
               },
       '/client/v3/rooms/!localpart%3Aexample.com/typing/%40alice%3Aexample.com':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/rooms/!1234%3Aexample.com/send/m.room.message/1234':
           (var reqI) => {
                 'event_id': '\$event${FakeMatrixApi.eventCounter++}',
@@ -2310,27 +2540,25 @@ class FakeMatrixApi extends MockClient {
                 'event_id': '\$event${FakeMatrixApi.eventCounter++}',
               },
       '/client/v3/user/%40test%3AfakeServer.notExisting/rooms/!localpart%3Aserver.abc/tags/m.favourite':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40alice%3Aexample.com/rooms/!localpart%3Aexample.com/tags/testtag':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40alice%3Aexample.com/account_data/test.account.data':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/best%20animal':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40alice%3Aexample.com/rooms/1234/account_data/test.account.data':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/rooms/!localpart%3Aserver.abc/account_data/com.famedly.marked_unread':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/m.direct':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40othertest%3AfakeServer.notExisting/account_data/m.direct':
-          (var req) => <String, Object?>{},
-      '/client/v3/profile/%40alice%3Aexample.com/displayname': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/profile/%40alice%3Aexample.com/avatar_url': (var reqI) =>
-          <String, Object?>{},
+          (var req) => {},
+      '/client/v3/profile/%40alice%3Aexample.com/displayname': (var reqI) => {},
+      '/client/v3/profile/%40alice%3Aexample.com/avatar_url': (var reqI) => {},
       '/client/v3/profile/%40test%3AfakeServer.notExisting/avatar_url':
-          (var reqI) => <String, Object?>{},
+          (var reqI) => {},
       '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.encryption':
           (var reqI) => {'event_id': 'YUwRidLecu:example.com'},
       '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.avatar':
@@ -2355,9 +2583,13 @@ class FakeMatrixApi extends MockClient {
           (var reqI) => {
                 'event_id': '42',
               },
+      '/client/v3/rooms/!calls%3Aexample.com/state/m.room.power_levels':
+          (var reqI) => {
+                'event_id': '42',
+              },
       '/client/v3/directory/list/room/!localpart%3Aexample.com': (var req) =>
-          <String, Object?>{},
-      '/client/v3/room_keys/version/5': (var req) => <String, Object?>{},
+          {},
+      '/client/v3/room_keys/version/5': (var req) => {},
       '/client/v3/room_keys/keys/${Uri.encodeComponent('!726s6s6q:example.com')}/${Uri.encodeComponent('ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU')}?version=5':
           (var req) => {
                 'etag': 'asdf',
@@ -2372,21 +2604,22 @@ class FakeMatrixApi extends MockClient {
             'etag': 'asdf',
             'count': 1,
           },
+      '/client/unstable/org.matrix.msc3814.v1/dehydrated_device': (var _) => {
+            'device_id': 'DEHYDDEV',
+          }
     },
     'DELETE': {
       '/unknown/token': (var req) => {'errcode': 'M_UNKNOWN_TOKEN'},
-      '/client/v3/devices/QBUAZIFURK': (var req) => <String, Object?>{},
-      '/client/v3/directory/room/%23testalias%3Aexample.com': (var reqI) =>
-          <String, Object?>{},
-      '/client/v3/pushrules/global/content/nocake': (var req) =>
-          <String, Object?>{},
+      '/client/v3/devices/QBUAZIFURK': (var req) => {},
+      '/client/v3/directory/room/%23testalias%3Aexample.com': (var reqI) => {},
+      '/client/v3/pushrules/global/content/nocake': (var req) => {},
       '/client/v3/pushrules/global/override/!localpart%3Aserver.abc':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/rooms/!localpart%3Aserver.abc/tags/m.favourite':
-          (var req) => <String, Object?>{},
+          (var req) => {},
       '/client/v3/user/%40alice%3Aexample.com/rooms/!localpart%3Aexample.com/tags/testtag':
-          (var req) => <String, Object?>{},
-      '/client/v3/room_keys/version/5': (var req) => <String, Object?>{},
+          (var req) => {},
+      '/client/v3/room_keys/version/5': (var req) => {},
       '/client/v3/room_keys/keys/${Uri.encodeComponent('!726s6s6q:example.com')}/${Uri.encodeComponent('ciM/JWTPrmiWPPZNkRLDPQYf9AW/I46bxyLSr+Bx5oU')}?version=5':
           (var req) => {
                 'etag': 'asdf',

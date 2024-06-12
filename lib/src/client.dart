@@ -31,6 +31,7 @@ import 'package:random_string/random_string.dart';
 
 import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
+import 'package:matrix/msc_extensions/msc_unpublished_custom_refresh_token_lifetime/msc_unpublished_custom_refresh_token_lifetime.dart';
 import 'package:matrix/src/models/timeline_chunk.dart';
 import 'package:matrix/src/utils/cached_stream_controller.dart';
 import 'package:matrix/src/utils/client_init_exception.dart';
@@ -69,7 +70,8 @@ class Client extends MatrixApi {
 
   DatabaseApi? get database => _database;
 
-  Encryption? encryption;
+  Encryption? get encryption => _encryption;
+  Encryption? _encryption;
 
   Set<KeyVerificationMethod> verificationMethods;
 
@@ -78,8 +80,6 @@ class Client extends MatrixApi {
   Set<String> roomPreviewLastEvents;
 
   Set<String> supportedLoginTypes;
-
-  int sendMessageTimeoutSeconds;
 
   bool requestHistoryOnLimitedTimeline;
 
@@ -91,7 +91,8 @@ class Client extends MatrixApi {
 
   Future<void> Function(Client client)? onSoftLogout;
 
-  DateTime? accessTokenExpiresAt;
+  DateTime? get accessTokenExpiresAt => _accessTokenExpiresAt;
+  DateTime? _accessTokenExpiresAt;
 
   // For CommandsClientExtension
   final Map<String, FutureOr<String?> Function(CommandArgs)> commands = {};
@@ -99,7 +100,9 @@ class Client extends MatrixApi {
 
   final NativeImplementations nativeImplementations;
 
-  String? syncFilterId;
+  String? _syncFilterId;
+
+  String? get syncFilterId => _syncFilterId;
 
   final ComputeCallback? compute;
 
@@ -174,7 +177,8 @@ class Client extends MatrixApi {
     Set<String>? roomPreviewLastEvents,
     this.pinUnreadRooms = false,
     this.pinInvitedRooms = true,
-    this.sendMessageTimeoutSeconds = 60,
+    @Deprecated('Use [sendTimelineEventTimeout] instead.')
+    int? sendMessageTimeoutSeconds,
     this.requestHistoryOnLimitedTimeline = false,
     Set<String>? supportedLoginTypes,
     this.mxidLocalPartFallback = true,
@@ -183,6 +187,7 @@ class Client extends MatrixApi {
     NativeImplementations nativeImplementations = NativeImplementations.dummy,
     Level? logLevel,
     Filter? syncFilter,
+    Duration defaultNetworkRequestTimeout = const Duration(seconds: 35),
     this.sendTimelineEventTimeout = const Duration(minutes: 1),
     this.customImageResizer,
     this.shareKeysWithUnverifiedDevices = true,
@@ -195,6 +200,11 @@ class Client extends MatrixApi {
     /// most common reason for soft logouts.
     /// You can also perform a new login here by passing the existing deviceId.
     this.onSoftLogout,
+
+    /// Experimental feature which allows to send a custom refresh token
+    /// lifetime to the server which overrides the default one. Needs server
+    /// support.
+    this.customRefreshTokenLifetime,
   })  : syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
@@ -211,7 +221,7 @@ class Client extends MatrixApi {
             : nativeImplementations,
         super(
             httpClient: FixedTimeoutHttpClient(
-                httpClient ?? http.Client(), Duration(seconds: 35))) {
+                httpClient ?? http.Client(), defaultNetworkRequestTimeout)) {
     if (logLevel != null) Logs().level = logLevel;
     importantStateEvents.addAll([
       EventTypes.RoomName,
@@ -238,6 +248,8 @@ class Client extends MatrixApi {
     registerDefaultCommands();
   }
 
+  Duration? customRefreshTokenLifetime;
+
   /// Fetches the refreshToken from the database and tries to get a new
   /// access token from the server and then stores it correctly. Unlike the
   /// pure API call of `Client.refresh()` this handles the complete soft
@@ -257,14 +269,17 @@ class Client extends MatrixApi {
       throw Exception('Cannot refresh access token when not logged in');
     }
 
-    final tokenResponse = await refresh(refreshToken);
+    final tokenResponse = await refreshWithCustomRefreshTokenLifetime(
+      refreshToken,
+      refreshTokenLifetimeMs: customRefreshTokenLifetime?.inMilliseconds,
+    );
 
     accessToken = tokenResponse.accessToken;
     final expiresInMs = tokenResponse.expiresInMs;
     final tokenExpiresAt = expiresInMs == null
         ? null
         : DateTime.now().add(Duration(milliseconds: expiresInMs));
-    accessTokenExpiresAt = tokenExpiresAt;
+    _accessTokenExpiresAt = tokenExpiresAt;
     await database?.updateClient(
       homeserverUrl,
       tokenResponse.accessToken,
@@ -286,7 +301,8 @@ class Client extends MatrixApi {
   String? _userID;
 
   /// This points to the position in the synchronization history.
-  String? prevBatch;
+  String? get prevBatch => _prevBatch;
+  String? _prevBatch;
 
   /// The device ID is an unique identifier for this device.
   String? get deviceID => _deviceID;
@@ -798,17 +814,19 @@ class Client extends MatrixApi {
     }
     if (groupCall) {
       powerLevelContentOverride ??= {};
-      powerLevelContentOverride['events'] = <String, dynamic>{
-        EventTypes.GroupCallMember: 0,
-      };
+      powerLevelContentOverride['events'] ??= {};
+      powerLevelContentOverride['events'][EventTypes.GroupCallMember] ??=
+          powerLevelContentOverride['events_default'] ?? 0;
     }
+
     final roomId = await createRoom(
-        invite: invite,
-        preset: preset,
-        name: groupName,
-        initialState: initialState,
-        visibility: visibility,
-        powerLevelContentOverride: powerLevelContentOverride);
+      invite: invite,
+      preset: preset,
+      name: groupName,
+      initialState: initialState,
+      visibility: visibility,
+      powerLevelContentOverride: powerLevelContentOverride,
+    );
 
     if (waitForSync) {
       if (getRoomById(roomId) == null) {
@@ -1294,6 +1312,7 @@ class Client extends MatrixApi {
       CachedStreamController();
 
   /// Callback will be called on account data updates.
+  @Deprecated('Use `client.onSync` instead')
   final CachedStreamController<BasicEvent> onAccountData =
       CachedStreamController();
 
@@ -1310,7 +1329,11 @@ class Client extends MatrixApi {
   final CachedStreamController<UiaRequest> onUiaRequest =
       CachedStreamController();
 
+  @Deprecated('This is not in use anywhere anymore')
   final CachedStreamController<Event> onGroupMember = CachedStreamController();
+
+  final CachedStreamController<String> onCancelSendEvent =
+      CachedStreamController();
 
   /// When a state in a room has been updated this will return the room ID
   /// and the state event.
@@ -1577,19 +1600,19 @@ class Client extends MatrixApi {
         accessToken = this.accessToken = account['token'];
         final tokenExpiresAtMs =
             int.tryParse(account.tryGet<String>('token_expires_at') ?? '');
-        accessTokenExpiresAt = tokenExpiresAtMs == null
+        _accessTokenExpiresAt = tokenExpiresAtMs == null
             ? null
             : DateTime.fromMillisecondsSinceEpoch(tokenExpiresAtMs);
         userID = _userID = account['user_id'];
         _deviceID = account['device_id'];
         _deviceName = account['device_name'];
-        syncFilterId = account['sync_filter_id'];
-        prevBatch = account['prev_batch'];
+        _syncFilterId = account['sync_filter_id'];
+        _prevBatch = account['prev_batch'];
         olmAccount = account['olm_account'];
       }
       if (newToken != null) {
         accessToken = this.accessToken = newToken;
-        accessTokenExpiresAt = newTokenExpiresAt;
+        _accessTokenExpiresAt = newTokenExpiresAt;
         homeserver = newHomeserver;
         userID = _userID = newUserID;
         _deviceID = newDeviceID;
@@ -1597,7 +1620,7 @@ class Client extends MatrixApi {
         olmAccount = newOlmAccount;
       } else {
         accessToken = this.accessToken = newToken ?? accessToken;
-        accessTokenExpiresAt = newTokenExpiresAt ?? accessTokenExpiresAt;
+        _accessTokenExpiresAt = newTokenExpiresAt ?? accessTokenExpiresAt;
         homeserver = newHomeserver ?? homeserver;
         userID = _userID = newUserID ?? userID;
         _deviceID = newDeviceID ?? _deviceID;
@@ -1632,7 +1655,7 @@ class Client extends MatrixApi {
         }
         // we aren't logged in
         await encryption?.dispose();
-        encryption = null;
+        _encryption = null;
         onLoginStateChanged.add(LoginState.loggedOut);
         Logs().i('User is not logged in.');
         _initLock = false;
@@ -1644,11 +1667,11 @@ class Client extends MatrixApi {
         // make sure to throw an exception if libolm doesn't exist
         await olm.init();
         olm.get_library_version();
-        encryption = Encryption(client: this);
+        _encryption = Encryption(client: this);
       } catch (e) {
         Logs().e('Error initializing encryption $e');
         await encryption?.dispose();
-        encryption = null;
+        _encryption = null;
       }
       await encryption?.init(olmAccount);
 
@@ -1750,12 +1773,12 @@ class Client extends MatrixApi {
       _database = null;
     }
 
-    _id = accessToken = syncFilterId =
-        homeserver = _userID = _deviceID = _deviceName = prevBatch = null;
+    _id = accessToken = _syncFilterId =
+        homeserver = _userID = _deviceID = _deviceName = _prevBatch = null;
     _rooms = [];
     _eventsPendingDecryption.clear();
     await encryption?.dispose();
-    encryption = null;
+    _encryption = null;
     onLoginStateChanged.add(LoginState.loggedOut);
   }
 
@@ -1803,25 +1826,31 @@ class Client extends MatrixApi {
     final userID = this.userID;
     if (syncFilterId == null && userID != null) {
       final syncFilterId =
-          this.syncFilterId = await defineFilter(userID, syncFilter);
+          _syncFilterId = await defineFilter(userID, syncFilter);
       await database?.storeSyncFilterId(syncFilterId);
     }
     return;
   }
 
+  Future<void>? _handleSoftLogoutFuture;
+
   Future<void> _handleSoftLogout() async {
     final onSoftLogout = this.onSoftLogout;
     if (onSoftLogout == null) return;
 
-    onLoginStateChanged.add(LoginState.softLoggedOut);
-    try {
-      await onSoftLogout(this);
-      onLoginStateChanged.add(LoginState.loggedIn);
-    } catch (e, s) {
-      Logs().w('Unable to refresh session after soft logout', e, s);
-      await clear();
-      rethrow;
-    }
+    _handleSoftLogoutFuture ??= () async {
+      onLoginStateChanged.add(LoginState.softLoggedOut);
+      try {
+        await onSoftLogout(this);
+        onLoginStateChanged.add(LoginState.loggedIn);
+      } catch (e, s) {
+        Logs().w('Unable to refresh session after soft logout', e, s);
+        await clear();
+        rethrow;
+      }
+    }();
+    await _handleSoftLogoutFuture;
+    _handleSoftLogoutFuture = null;
   }
 
   /// Checks if the token expires in under [expiresIn] time and calls the
@@ -1849,7 +1878,6 @@ class Client extends MatrixApi {
         return;
       }
       Object? syncError;
-      await _checkSyncFilter();
 
       // The timeout we send to the server for the sync loop. It says to the
       // server that we want to receive an empty sync response after this
@@ -1857,6 +1885,8 @@ class Client extends MatrixApi {
       timeout ??= const Duration(seconds: 30);
 
       await ensureNotSoftLoggedOut(timeout * 2);
+
+      await _checkSyncFilter();
 
       final syncRequest = sync(
         filter: syncFilterId,
@@ -1910,7 +1940,7 @@ class Client extends MatrixApi {
         await _handleSync(syncResp, direction: Direction.f);
       }
       if (_disposed || _aborted) return;
-      prevBatch = syncResp.nextBatch;
+      _prevBatch = syncResp.nextBatch;
       onSyncStatus.add(SyncStatusUpdate(SyncStatus.cleaningUp));
       // ignore: unawaited_futures
       database?.deleteOldFiles(
@@ -1998,6 +2028,7 @@ class Client extends MatrixApi {
         jsonEncode(newAccountData.content),
       );
       accountData[newAccountData.type] = newAccountData;
+      // ignore: deprecated_member_use_from_same_package
       onAccountData.add(newAccountData);
 
       if (newAccountData.type == EventTypes.PushRules) {
@@ -2372,6 +2403,7 @@ class Client extends MatrixApi {
           ..addAll(summary.toJson());
         rooms[roomIndex].summary = RoomSummary.fromJson(roomSummaryJson);
       }
+      // ignore: deprecated_member_use_from_same_package
       rooms[roomIndex].onUpdate.add(rooms[roomIndex].id);
       if ((chatUpdate.timeline?.limited ?? false) &&
           requestHistoryOnLimitedTimeline) {
@@ -2395,11 +2427,8 @@ class Client extends MatrixApi {
         final event = Event.fromJson(eventUpdate.content, room);
 
         // Update the room state:
-        if (!room.partial ||
-            // make sure we do overwrite events we have already loaded.
-            room.states[event.type]?.containsKey(event.stateKey ?? '') ==
-                true ||
-            importantStateEvents.contains(event.type)) {
+        if (event.stateKey != null &&
+            (!room.partial || importantStateEvents.contains(event.type))) {
           room.setState(event);
         }
         if (eventUpdate.type != EventUpdateType.timeline) break;
@@ -2450,6 +2479,7 @@ class Client extends MatrixApi {
       case EventUpdateType.decryptedTimelineQueue:
         break;
     }
+    // ignore: deprecated_member_use_from_same_package
     room.onUpdate.add(room.id);
   }
 
@@ -3034,7 +3064,7 @@ class Client extends MatrixApi {
   /// sessions and perform a new clean sync.
   Future<void> clearCache() async {
     await abortSync();
-    prevBatch = null;
+    _prevBatch = null;
     rooms.clear();
     await database?.clearCache();
     encryption?.keyManager.clearOutboundGroupSessions();
@@ -3141,7 +3171,7 @@ class Client extends MatrixApi {
     _disposed = true;
     await abortSync();
     await encryption?.dispose();
-    encryption = null;
+    _encryption = null;
     try {
       if (closeDatabase) {
         final database = _database;

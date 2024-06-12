@@ -120,7 +120,7 @@ extension FamedlyCallMemberEventsExtension on Room {
   }
 
   Future<void> setFamedlyCallMemberEvent(Map<String, List> newContent) async {
-    if (groupCallsEnabledForEveryone) {
+    if (canJoinGroupCall) {
       await client.setRoomStateWithKey(
         id,
         EventTypes.GroupCallMember,
@@ -128,8 +128,16 @@ extension FamedlyCallMemberEventsExtension on Room {
         newContent,
       );
     } else {
-      Logs().w(
-          '[VOIP] cannot send ${EventTypes.GroupCallMember} events in room: $id, fix your PLs');
+      throw MatrixSDKVoipException(
+        '''
+        User ${client.userID}:${client.deviceID} is not allowed to join famedly calls in room $id, 
+        canJoinGroupCall: $canJoinGroupCall, 
+        groupCallsEnabledForEveryone: $groupCallsEnabledForEveryone, 
+        needed: ${powerForChangingStateEvent(EventTypes.GroupCallMember)}, 
+        own: $ownPowerLevel}
+        plMap: ${getState(EventTypes.RoomPowerLevels)?.content}
+        ''',
+      );
     }
   }
 
@@ -164,4 +172,14 @@ bool isValidMemEvent(Map<String, Object?> event) {
         .v('[VOIP] FamedlyCallMemberEvent ignoring unclean membership $event');
     return false;
   }
+}
+
+class MatrixSDKVoipException implements Exception {
+  final String cause;
+  final StackTrace? stackTrace;
+
+  MatrixSDKVoipException(this.cause, {this.stackTrace});
+
+  @override
+  String toString() => '[VOIP] $cause, ${super.toString()}, $stackTrace';
 }

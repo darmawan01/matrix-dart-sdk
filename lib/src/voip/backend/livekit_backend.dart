@@ -52,6 +52,12 @@ class LiveKitBackend extends CallBackend {
     return newIndex;
   }
 
+  @override
+  Future<void> preShareKey(GroupCallSession groupCall) async {
+    await groupCall.onMemberStateChanged();
+    await _changeEncryptionKey(groupCall, groupCall.participants, false);
+  }
+
   /// makes a new e2ee key for local user and sets it with a delay if specified
   /// used on first join and when someone leaves
   ///
@@ -80,7 +86,8 @@ class LiveKitBackend extends CallBackend {
     final keyProvider = groupCall.voip.delegate.keyProvider;
 
     if (keyProvider == null) {
-      throw Exception('[VOIP] _ratchetKey called but KeyProvider was null');
+      throw MatrixSDKVoipException(
+          '_ratchetKey called but KeyProvider was null');
     }
 
     final myKeys = _encryptionKeysMap[groupCall.localParticipant];
@@ -112,6 +119,19 @@ class LiveKitBackend extends CallBackend {
       send: true,
       sendTo: sendTo,
     );
+  }
+
+  Future<void> _changeEncryptionKey(
+    GroupCallSession groupCall,
+    List<CallParticipant> anyJoined,
+    bool delayBeforeUsingKeyOurself,
+  ) async {
+    if (!e2eeEnabled) return;
+    if (groupCall.voip.enableSFUE2EEKeyRatcheting) {
+      await _ratchetLocalParticipantKey(groupCall, anyJoined);
+    } else {
+      await _makeNewSenderKey(groupCall, delayBeforeUsingKeyOurself);
+    }
   }
 
   /// sets incoming keys and also sends the key if it was for the local user
@@ -174,8 +194,6 @@ class LiveKitBackend extends CallBackend {
     int keyIndex, {
     List<CallParticipant>? sendTo,
   }) async {
-    Logs().i('Sending encryption keys event');
-
     final myKeys = _getKeysForParticipant(groupCall.localParticipant!);
     final myLatestKey = myKeys?[keyIndex];
 
@@ -229,6 +247,7 @@ class LiveKitBackend extends CallBackend {
     Map<String, Object> data,
     String eventType,
   ) async {
+    if (remoteParticipants.isEmpty) return;
     Logs().v(
         '[VOIP] _sendToDeviceEvent: sending ${data.toString()} to ${remoteParticipants.map((e) => e.id)} ');
     final txid =
@@ -316,6 +335,8 @@ class LiveKitBackend extends CallBackend {
     final keyContent = EncryptionKeysEventContent.fromJson(content);
 
     final callId = keyContent.callId;
+    final p =
+        CallParticipant(groupCall.voip, userId: userId, deviceId: deviceId);
 
     if (keyContent.keys.isEmpty) {
       Logs().w(
@@ -323,7 +344,7 @@ class LiveKitBackend extends CallBackend {
       return;
     } else {
       Logs().i(
-          '[VOIP E2EE]: onCallEncryption, got keys from $userId:$deviceId ${keyContent.toJson()}');
+          '[VOIP E2EE]: onCallEncryption, got keys from ${p.id} ${keyContent.toJson()}');
     }
 
     for (final key in keyContent.keys) {
@@ -331,7 +352,7 @@ class LiveKitBackend extends CallBackend {
       final encryptionKeyIndex = key.index;
       await _setEncryptionKey(
         groupCall,
-        CallParticipant(groupCall.voip, userId: userId, deviceId: deviceId),
+        p,
         encryptionKeyIndex,
         // base64Decode here because we receive base64Encoded version
         base64Decode(encryptionKey),
@@ -386,14 +407,8 @@ class LiveKitBackend extends CallBackend {
   Future<void> onNewParticipant(
     GroupCallSession groupCall,
     List<CallParticipant> anyJoined,
-  ) async {
-    if (!e2eeEnabled) return;
-    if (groupCall.voip.enableSFUE2EEKeyRatcheting) {
-      await _ratchetLocalParticipantKey(groupCall, anyJoined);
-    } else {
-      await _makeNewSenderKey(groupCall, true);
-    }
-  }
+  ) =>
+      _changeEncryptionKey(groupCall, anyJoined, true);
 
   @override
   Future<void> onLeftParticipant(

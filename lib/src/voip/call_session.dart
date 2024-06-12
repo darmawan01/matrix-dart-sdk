@@ -519,14 +519,6 @@ class CallSession {
         _remoteCandidates.add(candidate);
       }
     }
-
-    if (pc != null &&
-        {
-          RTCIceConnectionState.RTCIceConnectionStateDisconnected,
-          RTCIceConnectionState.RTCIceConnectionStateFailed
-        }.contains(pc!.iceConnectionState)) {
-      await restartIce();
-    }
   }
 
   void onAssertedIdentityReceived(AssertedIdentity identity) {
@@ -566,7 +558,6 @@ class CallSession {
         return true;
       } catch (err) {
         fireCallEvent(CallStateChange.kError);
-
         return false;
       }
     } else {
@@ -937,9 +928,10 @@ class CallSession {
       if (sender.track != null && sender.track!.kind == 'audio') {
         await sender.dtmfSender.insertDTMF(tones);
         return;
+      } else {
+        Logs().w('[VOIP] Unable to find a track to send DTMF on');
       }
     }
-    Logs().e('[VOIP] Unable to find a track to send DTMF on');
   }
 
   Future<void> terminate(
@@ -991,7 +983,9 @@ class CallSession {
       onCallHangupNotifierForGroupCalls.add(this);
       await voip.delegate.handleCallEnded(this);
       fireCallEvent(CallStateChange.kHangup);
-      if ((party == CallParty.kRemote && _missedCall)) {
+      if ((party == CallParty.kRemote &&
+          _missedCall &&
+          reason != CallErrorCode.answeredElsewhere)) {
         await voip.delegate.handleMissedCall(this);
       }
     }
@@ -1087,7 +1081,7 @@ class CallSession {
   }
 
   Future<void> onNegotiationNeeded() async {
-    Logs().i('Negotiation is needed!');
+    Logs().d('Negotiation is needed!');
     _makingOffer = true;
     try {
       // The first addTrack(audio track) on iOS will trigger
@@ -1106,13 +1100,14 @@ class CallSession {
   }
 
   Future<void> _preparePeerConnection() async {
+    int iceRestartedCount = 0;
+
     try {
       pc = await _createPeerConnection();
       pc!.onRenegotiationNeeded = onNegotiationNeeded;
 
       pc!.onIceCandidate = (RTCIceCandidate candidate) async {
         if (callHasEnded) return;
-        //Logs().v('[VOIP] onIceCandidate => ${candidate.toMap().toString()}');
         _localCandidates.add(candidate);
 
         if (state == CallState.kRinging || !_inviteOrAnswerSent) return;
@@ -1149,12 +1144,21 @@ class CallSession {
         if (state == RTCIceConnectionState.RTCIceConnectionStateConnected) {
           _localCandidates.clear();
           _remoteCandidates.clear();
+          iceRestartedCount = 0;
           setCallState(CallState.kConnected);
           // fix any state/race issues we had with sdp packets and cloned streams
           await updateMuteStatus();
           _missedCall = false;
-        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          await hangup(reason: CallErrorCode.iceFailed);
+        } else if ({
+          RTCIceConnectionState.RTCIceConnectionStateFailed,
+          RTCIceConnectionState.RTCIceConnectionStateDisconnected
+        }.contains(state)) {
+          if (iceRestartedCount < 3) {
+            await restartIce();
+            iceRestartedCount++;
+          } else {
+            await hangup(reason: CallErrorCode.iceFailed);
+          }
         }
       };
     } catch (e) {
@@ -1234,10 +1238,8 @@ class CallSession {
     Logs().v('[VOIP] iceRestart.');
     // Needs restart ice on session.pc and renegotiation.
     _iceGatheringFinished = false;
-    final desc =
-        await pc!.createOffer(_getOfferAnswerConstraints(iceRestart: true));
-    await pc!.setLocalDescription(desc);
     _localCandidates.clear();
+    await pc!.restartIce();
   }
 
   Future<MediaStream?> _getUserMedia(CallType type) async {
@@ -1272,8 +1274,7 @@ class CallSession {
     };
     final pc = await voip.delegate.createPeerConnection(configuration);
     pc.onTrack = (RTCTrackEvent event) async {
-      if (event.streams.isNotEmpty) {
-        final stream = event.streams[0];
+      for (final stream in event.streams) {
         await _addRemoteStream(stream);
         for (final track in stream.getTracks()) {
           track.onEnded = () async {
@@ -1320,13 +1321,6 @@ class CallSession {
     onStreamRemoved.add(wpstream);
     fireCallEvent(CallStateChange.kFeedsChanged);
     await wpstream.dispose();
-  }
-
-  Map<String, dynamic> _getOfferAnswerConstraints({bool iceRestart = false}) {
-    return {
-      'mandatory': {if (iceRestart) 'IceRestart': true},
-      'optional': [],
-    };
   }
 
   Future<void> _sendCandidateQueue() async {
@@ -1459,7 +1453,7 @@ class CallSession {
       if (capabilities != null) 'capabilities': capabilities.toJson(),
       if (metadata != null) sdpStreamMetadataKey: metadata.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall ? EventTypes.GroupCallMemberInvite : EventTypes.CallInvite,
       content,
@@ -1487,7 +1481,7 @@ class CallSession {
       'selected_party_id': selected_party_id,
     };
 
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberSelectAnswer
@@ -1510,7 +1504,7 @@ class CallSession {
       'version': version,
     };
 
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall ? EventTypes.GroupCallMemberReject : EventTypes.CallReject,
       content,
@@ -1540,7 +1534,7 @@ class CallSession {
       if (capabilities != null) 'capabilities': capabilities.toJson(),
       if (metadata != null) sdpStreamMetadataKey: metadata.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberNegotiate
@@ -1585,7 +1579,7 @@ class CallSession {
       'version': version,
       'candidates': candidates,
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberCandidates
@@ -1617,7 +1611,7 @@ class CallSession {
       if (capabilities != null) 'capabilities': capabilities.toJson(),
       if (metadata != null) sdpStreamMetadataKey: metadata.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall ? EventTypes.GroupCallMemberAnswer : EventTypes.CallAnswer,
       content,
@@ -1639,7 +1633,7 @@ class CallSession {
       'version': version,
       if (hangupCause != null) 'reason': hangupCause,
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall ? EventTypes.GroupCallMemberHangup : EventTypes.CallHangup,
       content,
@@ -1671,7 +1665,7 @@ class CallSession {
       'version': version,
       sdpStreamMetadataKey: metadata.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberSDPStreamMetadataChanged
@@ -1697,7 +1691,7 @@ class CallSession {
       'version': version,
       ...callReplaces.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberReplaces
@@ -1723,7 +1717,7 @@ class CallSession {
       'version': version,
       'asserted_identity': assertedIdentity.toJson(),
     };
-    return await _sendCallContent(
+    return await _sendContent(
       room,
       isGroupCall
           ? EventTypes.GroupCallMemberAssertedIdentity
@@ -1733,7 +1727,7 @@ class CallSession {
     );
   }
 
-  Future<String?> _sendCallContent(
+  Future<String?> _sendContent(
     Room room,
     String type,
     Map<String, Object> content, {

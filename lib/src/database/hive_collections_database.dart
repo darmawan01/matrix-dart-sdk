@@ -589,7 +589,9 @@ class HiveCollectionsDatabase extends DatabaseApi {
             for (final states in statesList) {
               if (states == null) continue;
               final stateEvents = states.values
-                  .map((raw) => Event.fromJson(copyMap(raw), room))
+                  .map((raw) => room.membership == Membership.invite
+                      ? StrippedStateEvent.fromJson(copyMap(raw))
+                      : Event.fromJson(copyMap(raw), room))
                   .toList();
               for (final state in stateEvents) {
                 room.setState(state);
@@ -635,7 +637,9 @@ class HiveCollectionsDatabase extends DatabaseApi {
           if (members != null) {
             for (final member in members) {
               if (member == null) continue;
-              room.setState(Event.fromJson(copyMap(member), room));
+              room.setState(room.membership == Membership.invite
+                  ? StrippedStateEvent.fromJson(copyMap(member))
+                  : Event.fromJson(copyMap(member), room));
             }
           }
         }
@@ -696,7 +700,7 @@ class HiveCollectionsDatabase extends DatabaseApi {
       unimportantEvents.addAll(
           states.values.map((raw) => Event.fromJson(copyMap(raw), room)));
     }
-    return unimportantEvents;
+    return unimportantEvents.where((event) => event.stateKey != null).toList();
   }
 
   @override
@@ -1130,7 +1134,11 @@ class HiveCollectionsDatabase extends DatabaseApi {
 
     final stateKey = eventUpdate.content['state_key'];
     // Store a common state event
-    if (stateKey != null) {
+    if (stateKey != null &&
+        // Don't store events as state updates when paginating backwards.
+        (eventUpdate.type == EventUpdateType.timeline ||
+            eventUpdate.type == EventUpdateType.state ||
+            eventUpdate.type == EventUpdateType.inviteState)) {
       if (eventUpdate.content['type'] == EventTypes.RoomMember) {
         await _roomMembersBox.put(
             TupleKey(

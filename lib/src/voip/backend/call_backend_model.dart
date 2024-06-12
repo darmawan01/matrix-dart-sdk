@@ -23,7 +23,8 @@ abstract class CallBackend {
         type: type,
       );
     } else {
-      throw ArgumentError('Invalid type: $type');
+      throw MatrixSDKVoipException(
+          'Invalid type: $type in CallBackend.fromJson');
     }
   }
 
@@ -71,6 +72,8 @@ abstract class CallBackend {
     GroupCallSession groupCall,
     List<CallParticipant> anyLeft,
   );
+
+  Future<void> preShareKey(GroupCallSession groupCall);
 
   Future<void> requestEncrytionKey(
     GroupCallSession groupCall,

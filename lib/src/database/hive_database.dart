@@ -618,7 +618,9 @@ class FamedlySdkHiveDatabase extends DatabaseApi with ZoneTransactionMixin {
               Logs().w('Unable to post load member $userId');
               continue;
             }
-            room.setState(Event.fromJson(convertToJson(state), room));
+            room.setState(room.membership == Membership.invite
+                ? StrippedStateEvent.fromJson(copyMap(raw))
+                : Event.fromJson(convertToJson(state), room));
           }
 
           // Get the "important" room states. All other states will be loaded once
@@ -628,7 +630,9 @@ class FamedlySdkHiveDatabase extends DatabaseApi with ZoneTransactionMixin {
                 .get(MultiKey(room.id, type).toString()) as Map?;
             if (states == null) continue;
             final stateEvents = states.values
-                .map((raw) => Event.fromJson(convertToJson(raw), room))
+                .map((raw) => room.membership == Membership.invite
+                    ? StrippedStateEvent.fromJson(copyMap(raw))
+                    : Event.fromJson(convertToJson(raw), room))
                 .toList();
             for (final state in stateEvents) {
               room.setState(state);
@@ -688,7 +692,7 @@ class FamedlySdkHiveDatabase extends DatabaseApi with ZoneTransactionMixin {
       unimportantEvents.addAll(
           states.values.map((raw) => Event.fromJson(convertToJson(raw), room)));
     }
-    return unimportantEvents;
+    return unimportantEvents.where((event) => event.stateKey != null).toList();
   }
 
   @override
@@ -1059,7 +1063,11 @@ class FamedlySdkHiveDatabase extends DatabaseApi with ZoneTransactionMixin {
 
     final stateKey = eventUpdate.content['state_key'];
     // Store a common state event
-    if (stateKey != null) {
+    if (stateKey != null &&
+        // Don't store events as state updates when paginating backwards.
+        (eventUpdate.type == EventUpdateType.timeline ||
+            eventUpdate.type == EventUpdateType.state ||
+            eventUpdate.type == EventUpdateType.inviteState)) {
       if (eventUpdate.content['type'] == EventTypes.RoomMember) {
         await _roomMembersBox.put(
             MultiKey(

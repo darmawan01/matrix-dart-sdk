@@ -18,7 +18,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:html_unescape/html_unescape.dart';
@@ -26,7 +25,6 @@ import 'package:html_unescape/html_unescape.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/models/timeline_chunk.dart';
 import 'package:matrix/src/utils/cached_stream_controller.dart';
-import 'package:matrix/src/utils/crypto/crypto.dart';
 import 'package:matrix/src/utils/file_send_request_credentials.dart';
 import 'package:matrix/src/utils/markdown.dart';
 import 'package:matrix/src/utils/marked_unread.dart';
@@ -36,41 +34,11 @@ import 'package:matrix/src/utils/space_child.dart';
 /// https://spec.matrix.org/v1.9/client-server-api/#size-limits
 const int maxPDUSize = 60000;
 
-enum PushRuleState { notify, mentionsOnly, dontNotify }
-
-enum JoinRules { public, knock, invite, private }
-
-enum GuestAccess { canJoin, forbidden }
-
-enum HistoryVisibility { invited, joined, shared, worldReadable }
-
-const Map<GuestAccess, String> _guestAccessMap = {
-  GuestAccess.canJoin: 'can_join',
-  GuestAccess.forbidden: 'forbidden',
-};
-
-extension GuestAccessExtension on GuestAccess {
-  String get text => _guestAccessMap[this]!;
-}
-
-const Map<HistoryVisibility, String> _historyVisibilityMap = {
-  HistoryVisibility.invited: 'invited',
-  HistoryVisibility.joined: 'joined',
-  HistoryVisibility.shared: 'shared',
-  HistoryVisibility.worldReadable: 'world_readable',
-};
-
-extension HistoryVisibilityExtension on HistoryVisibility {
-  String get text => _historyVisibilityMap[this]!;
-}
-
 const String messageSendingStatusKey =
     'com.famedly.famedlysdk.message_sending_status';
 
 const String fileSendingStatusKey =
     'com.famedly.famedlysdk.file_sending_status';
-
-const String emptyRoomName = 'Empty chat';
 
 /// Represents a Matrix room.
 class Room {
@@ -176,8 +144,9 @@ class Room {
     // the room ID:
     if (state is Event) {
       final roomId = state.roomId;
-      if (roomId == null || roomId != id) {
+      if (roomId != id) {
         Logs().wtf('Tried to set state event for wrong room!');
+        assert(roomId == id);
         return;
       }
     }
@@ -186,6 +155,7 @@ class Room {
       Logs().w(
         'Tried to set a non state event with type "${state.type}" as state event for a room',
       );
+      assert(stateKey != null);
       return;
     }
 
@@ -200,6 +170,7 @@ class Room {
 
   /// If something changes, this callback will be triggered. Will return the
   /// room id.
+  @Deprecated('Use `client.onSync` instead and filter for this room ID')
   final CachedStreamController<String> onUpdate = CachedStreamController();
 
   /// If there is a new session key received, this will be triggered with
@@ -356,15 +327,27 @@ class Room {
     });
   }
 
+  String? _cachedDirectChatMatrixId;
+
   /// If this room is a direct chat, this is the matrix ID of the user.
   /// Returns null otherwise.
   String? get directChatMatrixID {
+    // Calculating the directChatMatrixId can be expensive. We cache it and
+    // validate the cache instead every time.
+    final cache = _cachedDirectChatMatrixId;
+    if (cache != null) {
+      final roomIds = client.directChats[cache];
+      if (roomIds is List && roomIds.contains(id)) {
+        return cache;
+      }
+    }
+
     if (membership == Membership.invite) {
       final userID = client.userID;
       if (userID == null) return null;
       final invitation = getState(EventTypes.RoomMember, userID);
       if (invitation != null && invitation.content['is_direct'] == true) {
-        return invitation.senderId;
+        return _cachedDirectChatMatrixId = invitation.senderId;
       }
     }
 
@@ -373,8 +356,8 @@ class Room {
       final roomIds = e.value;
       return roomIds is List<dynamic> && roomIds.contains(id);
     })?.key;
-    if (mxId?.isValidMatrixId == true) return mxId;
-    return null;
+    if (mxId?.isValidMatrixId == true) return _cachedDirectChatMatrixId = mxId;
+    return _cachedDirectChatMatrixId = null;
   }
 
   /// Wheither this is a direct chat or not
@@ -942,10 +925,17 @@ class Room {
 
   Future<String?> _sendContent(
     String type,
-    Map<String, dynamic> sendMessageContent, {
+    Map<String, dynamic> content, {
     String? txid,
   }) async {
     txid ??= client.generateUniqueTransactionId();
+
+    final mustEncrypt = encrypted && client.encryptionEnabled;
+
+    final sendMessageContent = mustEncrypt
+        ? await client.encryption!
+            .encryptGroupMessagePayload(id, content, type: type)
+        : content;
 
     return await client.sendMessage(
       id,
@@ -1059,21 +1049,6 @@ class Room {
       }
     }
     final sentDate = DateTime.now();
-
-    final mustEncrypt = encrypted && client.encryptionEnabled;
-
-    final sendMessageContent = mustEncrypt
-        ? await client.encryption!
-            .encryptGroupMessagePayload(id, content, type: type)
-        : content;
-
-    final utf8EncodedJsonLength =
-        utf8.encode(jsonEncode(sendMessageContent)).length;
-
-    if (utf8EncodedJsonLength > maxPDUSize) {
-      throw EventTooLarge(utf8EncodedJsonLength);
-    }
-
     final syncUpdate = SyncUpdate(
       nextBatch: '',
       rooms: RoomsUpdate(
@@ -1113,7 +1088,7 @@ class Room {
       try {
         res = await _sendContent(
           type,
-          sendMessageContent,
+          content,
           txid: messageID,
         );
       } catch (e, s) {
@@ -1126,6 +1101,7 @@ class Room {
               'Ratelimited while sending message, waiting for ${e.retryAfterMs}ms');
           await Future.delayed(Duration(milliseconds: e.retryAfterMs!));
         } else if (e is MatrixException ||
+            e is EventTooLarge ||
             DateTime.now().isAfter(timeoutDate)) {
           Logs().w('Problem while sending message', e, s);
           syncUpdate.rooms!.join!.values.first.timeline!.events!.first
@@ -1133,6 +1109,7 @@ class Room {
           await _handleFakeSync(syncUpdate);
           completer.complete();
           _sendingQueue.remove(completer);
+          if (e is EventTooLarge) rethrow;
           return null;
         } else {
           Logs()
@@ -1665,7 +1642,6 @@ class Room {
         requestUser(
           mxID,
           ignoreErrors: true,
-          requestProfile: false,
         );
       }
       return User(mxID, room: this);
@@ -1684,53 +1660,74 @@ class Room {
   }) async {
     assert(mxID.isValidMatrixId);
 
-    // Checks if the user is really missing
-    final stateUser = getState(EventTypes.RoomMember, mxID);
-    if (stateUser != null) {
-      return stateUser.asUser(this);
-    }
+    // Is user already in cache?
+    var foundUser = getState(EventTypes.RoomMember, mxID)?.asUser(this);
 
-    // it may be in the database
-    final dbuser = await client.database?.getUser(mxID, this);
-    if (dbuser != null) {
-      setState(dbuser);
-      onUpdate.add(id);
-      return dbuser;
-    }
+    // If not, is it in the database?
+    foundUser ??= await client.database?.getUser(mxID, this);
 
-    if (!_requestingMatrixIds.add(mxID)) return null;
-    Map<String, dynamic>? resp;
-    try {
-      Logs().v(
-          'Request missing user $mxID in room ${getLocalizedDisplayname()} from the server...');
-      resp = await client.getRoomStateWithKey(
-        id,
-        EventTypes.RoomMember,
-        mxID,
-      );
-    } on MatrixException catch (_) {
-      // Ignore if we have no permission
-    } catch (e, s) {
-      if (!ignoreErrors) {
+    // If not, can we request it from the server?
+    if (foundUser == null) {
+      if (!_requestingMatrixIds.add(mxID)) return null;
+      Map<String, dynamic>? resp;
+      try {
+        Logs().v(
+            'Request missing user $mxID in room ${getLocalizedDisplayname()} from the server...');
+        resp = await client.getRoomStateWithKey(
+          id,
+          EventTypes.RoomMember,
+          mxID,
+        );
+        foundUser = User(
+          mxID,
+          room: this,
+          displayName: resp['displayname'],
+          avatarUrl: resp['avatar_url'],
+          membership: resp['membership'],
+        );
         _requestingMatrixIds.remove(mxID);
-        rethrow;
-      } else {
-        Logs().w('Unable to request the user $mxID from the server', e, s);
+
+        // Store user in database:
+        await client.database?.transaction(() async {
+          await client.database?.storeEventUpdate(
+            EventUpdate(
+              content: foundUser!.toJson(),
+              roomID: id,
+              type: EventUpdateType.state,
+            ),
+            client,
+          );
+        });
+      } on MatrixException catch (_) {
+        // Ignore if we have no permission
+      } catch (e, s) {
+        if (!ignoreErrors) {
+          _requestingMatrixIds.remove(mxID);
+          rethrow;
+        } else {
+          Logs().w('Unable to request the user $mxID from the server', e, s);
+        }
       }
     }
-    if (resp == null && requestProfile) {
+
+    // User not found anywhere? Set a blank one:
+    foundUser ??= User(mxID, room: this, membership: 'leave');
+
+    // Is it a left user without any displayname/avatar info? Try fetch profile:
+    if (requestProfile &&
+        {Membership.ban, Membership.leave}.contains(foundUser.membership) &&
+        foundUser.displayName == null &&
+        foundUser.avatarUrl == null) {
       try {
-        final profile = await client.getUserProfile(mxID);
-        _requestingMatrixIds.remove(mxID);
-        return User(
+        final profile = await client.getProfileFromUserId(mxID);
+        foundUser = User(
           mxID,
-          displayName: profile.displayname,
+          displayName: profile.displayName,
           avatarUrl: profile.avatarUrl?.toString(),
           membership: Membership.leave.name,
           room: this,
         );
       } catch (e, s) {
-        _requestingMatrixIds.remove(mxID);
         if (!ignoreErrors) {
           rethrow;
         } else {
@@ -1738,40 +1735,13 @@ class Room {
         }
       }
     }
-    if (resp == null) {
-      return null;
-    }
-    final user = User(mxID,
-        displayName: resp['displayname'],
-        avatarUrl: resp['avatar_url'],
-        room: this);
-    setState(user);
-    await client.database?.transaction(() async {
-      final fakeEventId = String.fromCharCodes(
-        await sha256(
-          Uint8List.fromList(
-              (id + mxID + client.generateUniqueTransactionId()).codeUnits),
-        ),
-      );
-      await client.database?.storeEventUpdate(
-        EventUpdate(
-          content: MatrixEvent(
-            type: EventTypes.RoomMember,
-            content: resp!,
-            stateKey: mxID,
-            originServerTs: DateTime.now(),
-            senderId: mxID,
-            eventId: fakeEventId,
-          ).toJson(),
-          roomID: id,
-          type: EventUpdateType.state,
-        ),
-        client,
-      );
-    });
+
+    // Set user in the local state
+    setState(foundUser!);
+    // ignore: deprecated_member_use_from_same_package
     onUpdate.add(id);
-    _requestingMatrixIds.remove(mxID);
-    return user;
+
+    return foundUser;
   }
 
   /// Searches for the event in the local cache and then on the server if not
@@ -2100,11 +2070,10 @@ class Room {
   /// to the room from someone already inside of the room. Currently, knock and private are reserved
   /// keywords which are not implemented.
   JoinRules? get joinRules {
-    final joinRule = getState(EventTypes.RoomJoinRules)?.content['join_rule'];
-    return joinRule != null
-        ? JoinRules.values.firstWhereOrNull(
-            (r) => r.toString().replaceAll('JoinRules.', '') == joinRule)
-        : null;
+    final joinRulesString =
+        getState(EventTypes.RoomJoinRules)?.content.tryGet<String>('join_rule');
+    return JoinRules.values
+        .singleWhereOrNull((element) => element.text == joinRulesString);
   }
 
   /// Changes the join rules. You should check first if the user is able to change it.
@@ -2126,11 +2095,12 @@ class Room {
   /// This event controls whether guest users are allowed to join rooms. If this event
   /// is absent, servers should act as if it is present and has the guest_access value "forbidden".
   GuestAccess get guestAccess {
-    final ga = getState(EventTypes.GuestAccess)?.content['guest_access'];
-    return ga != null
-        ? (_guestAccessMap.map((k, v) => MapEntry(v, k))[ga] ??
-            GuestAccess.forbidden)
-        : GuestAccess.forbidden;
+    final guestAccessString = getState(EventTypes.GuestAccess)
+        ?.content
+        .tryGet<String>('guest_access');
+    return GuestAccess.values.singleWhereOrNull(
+            (element) => element.text == guestAccessString) ??
+        GuestAccess.forbidden;
   }
 
   /// Changes the guest access. You should check first if the user is able to change it.
@@ -2151,11 +2121,11 @@ class Room {
 
   /// This event controls whether a user can see the events that happened in a room from before they joined.
   HistoryVisibility? get historyVisibility {
-    final hv =
-        getState(EventTypes.HistoryVisibility)?.content['history_visibility'];
-    return hv != null
-        ? _historyVisibilityMap.map((k, v) => MapEntry(v, k))[hv]
-        : null;
+    final historyVisibilityString = getState(EventTypes.HistoryVisibility)
+        ?.content
+        .tryGet<String>('history_visibility');
+    return HistoryVisibility.values.singleWhereOrNull(
+        (element) => element.text == historyVisibilityString);
   }
 
   /// Changes the history visibility. You should check first if the user is able to change it.
@@ -2367,9 +2337,4 @@ class Room {
 enum EncryptionHealthState {
   allVerified,
   unverifiedDevices,
-}
-
-class EventTooLarge implements Exception {
-  int length;
-  EventTooLarge(this.length);
 }

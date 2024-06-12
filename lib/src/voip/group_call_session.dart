@@ -48,7 +48,7 @@ class GroupCallSession {
   CallParticipant? get localParticipant => voip.localParticipant;
 
   List<CallParticipant> get participants => List.unmodifiable(_participants);
-  final List<CallParticipant> _participants = [];
+  final Set<CallParticipant> _participants = {};
 
   String groupCallId;
 
@@ -56,6 +56,9 @@ class GroupCallSession {
       CachedStreamController();
 
   final CachedStreamController<GroupCallStateChange> onGroupCallEvent =
+      CachedStreamController();
+
+  final CachedStreamController<MatrixRTCCallEvent> matrixRTCEventStream =
       CachedStreamController();
 
   Timer? _resendMemberStateEventTimer;
@@ -112,7 +115,7 @@ class GroupCallSession {
   Future<void> enter({WrappedMediaStream? stream}) async {
     if (!(state == GroupCallState.localCallFeedUninitialized ||
         state == GroupCallState.localCallFeedInitialized)) {
-      throw Exception('Cannot enter call in the $state state');
+      throw MatrixSDKVoipException('Cannot enter call in the $state state');
     }
 
     if (state == GroupCallState.localCallFeedUninitialized) {
@@ -199,12 +202,6 @@ class GroupCallSession {
 
   /// compltetely rebuilds the local _participants list
   Future<void> onMemberStateChanged() async {
-    if (state != GroupCallState.entered) {
-      Logs().d(
-          '[VOIP] early return onMemberStateChanged, group call state is not Entered. Actual state: ${state.toString()} ');
-      return;
-    }
-
     // The member events may be received for another room, which we will ignore.
     final mems =
         room.getCallMembershipsFromRoom().values.expand((element) => element);
@@ -220,11 +217,11 @@ class GroupCallSession {
         mems.where((element) => !memsForCurrentGroupCall.contains(element));
 
     for (final mem in ignoredMems) {
-      Logs().w(
+      Logs().v(
           '[VOIP] Ignored ${mem.userId}\'s mem event ${mem.toJson()} while updating _participants list for callId: $groupCallId, expiry status: ${mem.isExpired}');
     }
 
-    final List<CallParticipant> newP = [];
+    final Set<CallParticipant> newP = {};
 
     for (final mem in memsForCurrentGroupCall) {
       final rp = CallParticipant(
@@ -245,23 +242,35 @@ class GroupCallSession {
 
       await backend.setupP2PCallWithNewMember(this, rp, mem);
     }
-    final newPcopy = List<CallParticipant>.from(newP);
-    final oldPcopy = List<CallParticipant>.from(_participants);
-    final anyJoined = newPcopy.where((element) => !oldPcopy.contains(element));
-    final anyLeft = oldPcopy.where((element) => !newPcopy.contains(element));
+    final newPcopy = Set<CallParticipant>.from(newP);
+    final oldPcopy = Set<CallParticipant>.from(_participants);
+    final anyJoined = newPcopy.difference(oldPcopy);
+    final anyLeft = oldPcopy.difference(newPcopy);
 
     if (anyJoined.isNotEmpty || anyLeft.isNotEmpty) {
       if (anyJoined.isNotEmpty) {
-        Logs().d('anyJoined: ${anyJoined.map((e) => e.id).toString()}');
+        final nonLocalAnyJoined = Set<CallParticipant>.from(anyJoined)
+          ..remove(localParticipant);
+        if (nonLocalAnyJoined.isNotEmpty && state == GroupCallState.entered) {
+          Logs().v(
+              'nonLocalAnyJoined: ${nonLocalAnyJoined.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId');
+          await backend.onNewParticipant(this, nonLocalAnyJoined.toList());
+        }
         _participants.addAll(anyJoined);
-        await backend.onNewParticipant(this, anyJoined.toList());
+        matrixRTCEventStream
+            .add(ParticipantsJoinEvent(participants: anyJoined.toList()));
       }
       if (anyLeft.isNotEmpty) {
-        Logs().d('anyLeft: ${anyLeft.map((e) => e.id).toString()}');
-        for (final leftp in anyLeft) {
-          _participants.remove(leftp);
+        final nonLocalAnyLeft = Set<CallParticipant>.from(anyLeft)
+          ..remove(localParticipant);
+        if (nonLocalAnyLeft.isNotEmpty && state == GroupCallState.entered) {
+          Logs().v(
+              'nonLocalAnyLeft: ${nonLocalAnyLeft.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId');
+          await backend.onLeftParticipant(this, nonLocalAnyLeft.toList());
         }
-        await backend.onLeftParticipant(this, anyLeft.toList());
+        _participants.removeAll(anyLeft);
+        matrixRTCEventStream
+            .add(ParticipantsLeftEvent(participants: anyLeft.toList()));
       }
 
       onGroupCallEvent.add(GroupCallStateChange.participantsChanged);

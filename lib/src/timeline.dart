@@ -44,6 +44,7 @@ class Timeline {
   StreamSubscription<EventUpdate>? sub;
   StreamSubscription<SyncUpdate>? roomSub;
   StreamSubscription<String>? sessionIdReceivedSub;
+  StreamSubscription<String>? cancelSendEventSub;
   bool isRequestingHistory = false;
   bool isRequestingFuture = false;
 
@@ -74,9 +75,13 @@ class Timeline {
   // even if /sync's complete while history is being proccessed.
   bool _collectHistoryUpdates = false;
 
+  // We confirmed, that there are no more events to load from the database.
+  bool _fetchedAllDatabaseEvents = false;
+
   bool get canRequestHistory {
     if (events.isEmpty) return true;
-    return room.prev_batch != null && events.last.type != EventTypes.RoomCreate;
+    return !_fetchedAllDatabaseEvents ||
+        (room.prev_batch != null && events.last.type != EventTypes.RoomCreate);
   }
 
   Future<void> requestHistory(
@@ -146,20 +151,26 @@ class Timeline {
           }
         }
       } else {
+        _fetchedAllDatabaseEvents = true;
         Logs().i('No more events found in the store. Request from server...');
+
         if (isFragmentedTimeline) {
           await getRoomEvents(
             historyCount: historyCount,
             direction: direction,
           );
         } else {
-          await room.requestHistory(
-            historyCount: historyCount,
-            direction: direction,
-            onHistoryReceived: () {
-              _collectHistoryUpdates = true;
-            },
-          );
+          if (room.prev_batch == null) {
+            Logs().i('No more events to request from server...');
+          } else {
+            await room.requestHistory(
+              historyCount: historyCount,
+              direction: direction,
+              onHistoryReceived: () {
+                _collectHistoryUpdates = true;
+              },
+            );
+          }
         }
       }
     } finally {
@@ -278,6 +289,8 @@ class Timeline {
 
     sessionIdReceivedSub =
         room.onSessionKeyReceived.stream.listen(_sessionKeyReceived);
+    cancelSendEventSub =
+        room.client.onCancelSendEvent.stream.listen(_cleanUpCancelledEvent);
 
     // we want to populate our aggregated events
     for (final e in events) {
@@ -288,6 +301,18 @@ class Timeline {
     if (chunk.nextBatch != '') {
       allowNewEvent = false;
       isFragmentedTimeline = true;
+      // fragmented timelines never read from the database.
+      _fetchedAllDatabaseEvents = true;
+    }
+  }
+
+  void _cleanUpCancelledEvent(String eventId) {
+    final i = _findEvent(event_id: eventId);
+    if (i < events.length) {
+      removeAggregatedEvent(events[i]);
+      events.removeAt(i);
+      onRemove?.call(i);
+      onUpdate?.call();
     }
   }
 
@@ -306,6 +331,8 @@ class Timeline {
     roomSub?.cancel();
     // ignore: discarded_futures
     sessionIdReceivedSub?.cancel();
+    // ignore: discarded_futures
+    cancelSendEventSub?.cancel();
   }
 
   void _sessionKeyReceived(String sessionId) async {
@@ -462,55 +489,46 @@ class Timeline {
               : null) ??
           EventStatus.synced.intValue);
 
-      if (status.isRemoved) {
-        final i = _findEvent(event_id: eventUpdate.content['event_id']);
-        if (i < events.length) {
-          removeAggregatedEvent(events[i]);
-          events.removeAt(i);
-          onRemove?.call(i);
+      final i = _findEvent(
+          event_id: eventUpdate.content['event_id'],
+          unsigned_txid: eventUpdate.content['unsigned'] is Map
+              ? eventUpdate.content['unsigned']['transaction_id']
+              : null);
+
+      if (i < events.length) {
+        // if the old status is larger than the new one, we also want to preserve the old status
+        final oldStatus = events[i].status;
+        events[i] = Event.fromJson(
+          eventUpdate.content,
+          room,
+        );
+        // do we preserve the status? we should allow 0 -> -1 updates and status increases
+        if ((latestEventStatus(status, oldStatus) == oldStatus) &&
+            !(status.isError && oldStatus.isSending)) {
+          events[i].status = oldStatus;
         }
+        addAggregatedEvent(events[i]);
+        onChange?.call(i);
       } else {
-        final i = _findEvent(
-            event_id: eventUpdate.content['event_id'],
-            unsigned_txid: eventUpdate.content['unsigned'] is Map
-                ? eventUpdate.content['unsigned']['transaction_id']
-                : null);
+        final newEvent = Event.fromJson(
+          eventUpdate.content,
+          room,
+        );
 
-        if (i < events.length) {
-          // if the old status is larger than the new one, we also want to preserve the old status
-          final oldStatus = events[i].status;
-          events[i] = Event.fromJson(
-            eventUpdate.content,
-            room,
-          );
-          // do we preserve the status? we should allow 0 -> -1 updates and status increases
-          if ((latestEventStatus(status, oldStatus) == oldStatus) &&
-              !(status.isError && oldStatus.isSending)) {
-            events[i].status = oldStatus;
-          }
-          addAggregatedEvent(events[i]);
-          onChange?.call(i);
+        if (eventUpdate.type == EventUpdateType.history &&
+            events.indexWhere(
+                    (e) => e.eventId == eventUpdate.content['event_id']) !=
+                -1) return;
+        var index = events.length;
+        if (eventUpdate.type == EventUpdateType.history) {
+          events.add(newEvent);
         } else {
-          final newEvent = Event.fromJson(
-            eventUpdate.content,
-            room,
-          );
-
-          if (eventUpdate.type == EventUpdateType.history &&
-              events.indexWhere(
-                      (e) => e.eventId == eventUpdate.content['event_id']) !=
-                  -1) return;
-          var index = events.length;
-          if (eventUpdate.type == EventUpdateType.history) {
-            events.add(newEvent);
-          } else {
-            index = events.firstIndexWhereNotError;
-            events.insert(index, newEvent);
-          }
-          onInsert?.call(index);
-
-          addAggregatedEvent(newEvent);
+          index = events.firstIndexWhereNotError;
+          events.insert(index, newEvent);
         }
+        onInsert?.call(index);
+
+        addAggregatedEvent(newEvent);
       }
 
       // Handle redaction events

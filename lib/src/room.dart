@@ -115,9 +115,11 @@ class Room {
     if (!partial) {
       return;
     }
-    final allStates = await client.database
-        ?.getUnimportantRoomEventStatesForRoom(
-            client.importantStateEvents.toList(), this);
+    final allStates =
+        await client.database?.getUnimportantRoomEventStatesForRoom(
+      client.importantStateEvents.toList(),
+      this,
+    );
 
     if (allStates != null) {
       for (final state in allStates) {
@@ -216,12 +218,16 @@ class Room {
 
     if (heroes == null) return [];
 
-    return await Future.wait(heroes.map((hero) async =>
-        (await requestUser(
-          hero,
-          ignoreErrors: true,
-        )) ??
-        User(hero, room: this)));
+    return await Future.wait(
+      heroes.map(
+        (hero) async =>
+            (await requestUser(
+              hero,
+              ignoreErrors: true,
+            )) ??
+            User(hero, room: this),
+      ),
+    );
   }
 
   /// Returns a localized displayname for this server. If the room is a groupchat
@@ -251,8 +257,10 @@ class Room {
             // removing oneself from the hero list
             (hero) => hero.isNotEmpty && hero != client.userID,
           )
-          .map((hero) => unsafeGetUserFromMemoryOrFallback(hero)
-              .calcDisplayname(i18n: i18n))
+          .map(
+            (hero) => unsafeGetUserFromMemoryOrFallback(hero)
+                .calcDisplayname(i18n: i18n),
+          )
           .join(', ');
       if (isAbandonedDMRoom) {
         return i18n.wasDirectChatDisplayName(result);
@@ -273,8 +281,9 @@ class Room {
     if (membership == Membership.leave) {
       if (directChatMatrixID != null) {
         return i18n.wasDirectChatDisplayName(
-            unsafeGetUserFromMemoryOrFallback(directChatMatrixID)
-                .calcDisplayname(i18n: i18n));
+          unsafeGetUserFromMemoryOrFallback(directChatMatrixID)
+              .calcDisplayname(i18n: i18n),
+        );
       }
     }
     return i18n.emptyChat;
@@ -450,12 +459,13 @@ class Room {
 
   /// Add a tag to the room.
   Future<void> addTag(String tag, {double? order}) => client.setRoomTag(
-      client.userID!,
-      id,
-      tag,
-      Tag(
-        order: order,
-      ));
+        client.userID!,
+        id,
+        tag,
+        Tag(
+          order: order,
+        ),
+      );
 
   /// Removes a tag from the room.
   Future<void> removeTag(String tag) => client.deleteRoomTag(
@@ -493,10 +503,10 @@ class Room {
 
   bool get markedUnread {
     return MarkedUnread.fromJson(
-            roomAccountData[EventType.markedUnread]?.content ??
-                roomAccountData[EventType.oldMarkedUnread]?.content ??
-                {})
-        .unread;
+      roomAccountData[EventType.markedUnread]?.content ??
+          roomAccountData[EventType.oldMarkedUnread]?.content ??
+          {},
+    ).unread;
   }
 
   /// Checks if the last event has a read marker of the user.
@@ -525,8 +535,9 @@ class Room {
   }
 
   LatestReceiptState get receiptState => LatestReceiptState.fromJson(
-      roomAccountData[LatestReceiptState.eventType]?.content ??
-          <String, dynamic>{});
+        roomAccountData[LatestReceiptState.eventType]?.content ??
+            <String, dynamic>{},
+      );
 
   /// Returns true if this room is unread. To check if there are new messages
   /// in muted rooms, use [hasNewMessages].
@@ -564,7 +575,7 @@ class Room {
                   type: EventType.markedUnread,
                 ),
               ],
-            )
+            ),
           },
         ),
       ),
@@ -600,31 +611,38 @@ class Room {
 
   /// Sends a normal text message to this room. Returns the event ID generated
   /// by the server for this message.
-  Future<String?> sendTextEvent(String message,
-      {String? txid,
-      Event? inReplyTo,
-      String? editEventId,
-      bool parseMarkdown = true,
-      bool parseCommands = true,
-      String msgtype = MessageTypes.Text,
-      String? threadRootEventId,
-      String? threadLastEventId}) {
+  Future<String?> sendTextEvent(
+    String message, {
+    String? txid,
+    Event? inReplyTo,
+    String? editEventId,
+    bool parseMarkdown = true,
+    bool parseCommands = true,
+    String msgtype = MessageTypes.Text,
+    String? threadRootEventId,
+    String? threadLastEventId,
+  }) {
     if (parseCommands) {
-      return client.parseAndRunCommand(this, message,
-          inReplyTo: inReplyTo,
-          editEventId: editEventId,
-          txid: txid,
-          threadRootEventId: threadRootEventId,
-          threadLastEventId: threadLastEventId);
+      return client.parseAndRunCommand(
+        this,
+        message,
+        inReplyTo: inReplyTo,
+        editEventId: editEventId,
+        txid: txid,
+        threadRootEventId: threadRootEventId,
+        threadLastEventId: threadLastEventId,
+      );
     }
     final event = <String, dynamic>{
       'msgtype': msgtype,
       'body': message,
     };
     if (parseMarkdown) {
-      final html = markdown(event['body'],
-          getEmotePacks: () => getImagePacksFlat(ImagePackUsage.emoticon),
-          getMention: getMention);
+      final html = markdown(
+        event['body'],
+        getEmotePacks: () => getImagePacksFlat(ImagePackUsage.emoticon),
+        getMention: getMention,
+      );
       // if the decoded html is the same as the body, there is no need in sending a formatted message
       if (HtmlUnescape().convert(html.replaceAll(RegExp(r'<br />\n?'), '\n')) !=
           event['body']) {
@@ -645,13 +663,17 @@ class Room {
   /// Sends a reaction to an event with an [eventId] and the content [key] into a room.
   /// Returns the event ID generated by the server for this reaction.
   Future<String?> sendReaction(String eventId, String key, {String? txid}) {
-    return sendEvent({
-      'm.relates_to': {
-        'rel_type': RelationshipTypes.reaction,
-        'event_id': eventId,
-        'key': key,
+    return sendEvent(
+      {
+        'm.relates_to': {
+          'rel_type': RelationshipTypes.reaction,
+          'event_id': eventId,
+          'key': key,
+        },
       },
-    }, type: EventTypes.Reaction, txid: txid);
+      type: EventTypes.Reaction,
+      txid: txid,
+    );
   }
 
   /// Sends the location with description [body] and geo URI [geoUri] into a room.
@@ -845,10 +867,10 @@ class Room {
             'ext': true,
             'k': encryptedFile.k,
             'key_ops': ['encrypt', 'decrypt'],
-            'kty': 'oct'
+            'kty': 'oct',
           },
           'iv': encryptedFile.iv,
-          'hashes': {'sha256': encryptedFile.sha256}
+          'hashes': {'sha256': encryptedFile.sha256},
         },
       'info': {
         ...file.info,
@@ -864,16 +886,16 @@ class Room {
               'ext': true,
               'k': encryptedThumbnail.k,
               'key_ops': ['encrypt', 'decrypt'],
-              'kty': 'oct'
+              'kty': 'oct',
             },
             'iv': encryptedThumbnail.iv,
-            'hashes': {'sha256': encryptedThumbnail.sha256}
+            'hashes': {'sha256': encryptedThumbnail.sha256},
           },
         if (thumbnail != null) 'thumbnail_info': thumbnail.info,
         if (thumbnail?.blurhash != null &&
             file is MatrixImageFile &&
             file.blurhash == null)
-          'xyz.amorgan.blurhash': thumbnail!.blurhash
+          'xyz.amorgan.blurhash': thumbnail!.blurhash,
       },
       if (extraContent != null) ...extraContent,
     };
@@ -898,12 +920,16 @@ class Room {
   /// encryption security level.
   Future<EncryptionHealthState> calcEncryptionHealthState() async {
     final users = await requestParticipants();
-    users.removeWhere((u) =>
-        !{Membership.invite, Membership.join}.contains(u.membership) ||
-        !client.userDeviceKeys.containsKey(u.id));
+    users.removeWhere(
+      (u) =>
+          !{Membership.invite, Membership.join}.contains(u.membership) ||
+          !client.userDeviceKeys.containsKey(u.id),
+    );
 
-    if (users.any((u) =>
-        client.userDeviceKeys[u.id]!.verified != UserVerifiedStatus.verified)) {
+    if (users.any(
+      (u) =>
+          client.userDeviceKeys[u.id]!.verified != UserVerifiedStatus.verified,
+    )) {
       return EncryptionHealthState.unverifiedDevices;
     }
 
@@ -983,9 +1009,14 @@ class Room {
               ? inReplyTo.formattedText
               : htmlEscape.convert(inReplyTo.body).replaceAll('\n', '<br>'))
           .replaceAll(
-              RegExp(r'<mx-reply>.*</mx-reply>',
-                  caseSensitive: false, multiLine: false, dotAll: true),
-              '');
+        RegExp(
+          r'<mx-reply>.*</mx-reply>',
+          caseSensitive: false,
+          multiLine: false,
+          dotAll: true,
+        ),
+        '',
+      );
       final repliedHtml = content.tryGet<String>('formatted_body') ??
           htmlEscape
               .convert(content.tryGet<String>('body') ?? '')
@@ -1017,7 +1048,7 @@ class Room {
             'm.in_reply_to': {
               'event_id': threadLastEventId,
             },
-        }
+        },
       };
     }
 
@@ -1085,7 +1116,8 @@ class Room {
                 .add(Duration(milliseconds: e.retryAfterMs!))
                 .isAfter(timeoutDate)) {
           Logs().w(
-              'Ratelimited while sending message, waiting for ${e.retryAfterMs}ms');
+            'Ratelimited while sending message, waiting for ${e.retryAfterMs}ms',
+          );
           await Future.delayed(Duration(milliseconds: e.retryAfterMs!));
         } else if (e is MatrixException ||
             e is EventTooLarge ||
@@ -1096,7 +1128,10 @@ class Room {
           await _handleFakeSync(syncUpdate);
           completer.complete();
           _sendingQueue.remove(completer);
-          if (e is EventTooLarge) rethrow;
+          if (e is EventTooLarge ||
+              (e is MatrixException && e.error == MatrixError.M_FORBIDDEN)) {
+            rethrow;
+          }
           return null;
         } else {
           Logs()
@@ -1118,21 +1153,29 @@ class Room {
   /// Call the Matrix API to join this room if the user is not already a member.
   /// If this room is intended to be a direct chat, the direct chat flag will
   /// automatically be set.
-  Future<void> join({bool leaveIfNotFound = true}) async {
+  Future<void> join({
+    /// In case of the room is not found on the server, the client leaves the
+    /// room and rethrows the exception.
+    bool leaveIfNotFound = true,
+  }) async {
+    final dmId = directChatMatrixID;
     try {
       // If this is a DM, mark it as a DM first, because otherwise the current member
       // event might be the join event already and there is also a race condition there for SDK users.
-      final dmId = directChatMatrixID;
-      if (dmId != null) {
-        await addToDirectChat(dmId);
-      }
+      if (dmId != null) await addToDirectChat(dmId);
 
       // now join
       await client.joinRoomById(id);
     } on MatrixException catch (exception) {
+      if (dmId != null) await removeFromDirectChat();
       if (leaveIfNotFound &&
-          [MatrixError.M_NOT_FOUND, MatrixError.M_UNKNOWN]
-              .contains(exception.error)) {
+          membership == Membership.invite &&
+          // Right now Synapse responses with `M_UNKNOWN` when the room can not
+          // be found. This is the case for example when User A invites User B
+          // to a direct chat and then User A leaves the chat before User B
+          // joined.
+          // See: https://github.com/element-hq/synapse/issues/1533
+          exception.error == MatrixError.M_UNKNOWN) {
         await leave();
       }
       rethrow;
@@ -1145,9 +1188,13 @@ class Room {
   Future<void> leave() async {
     try {
       await client.leaveRoom(id);
-    } on MatrixException catch (exception) {
-      if ([MatrixError.M_NOT_FOUND, MatrixError.M_UNKNOWN]
-          .contains(exception.error)) {
+    } on MatrixException catch (e, s) {
+      if ([MatrixError.M_NOT_FOUND, MatrixError.M_UNKNOWN].contains(e.error)) {
+        Logs().w(
+          'Unable to leave room. Deleting manually from database...',
+          e,
+          s,
+        );
         await _handleFakeSync(
           SyncUpdate(
             nextBatch: '',
@@ -1202,7 +1249,8 @@ class Room {
     if (users is! Map<String, Object?>) {
       if (users != null) {
         Logs().v(
-            'Repairing Power Level "users" has the wrong type "${powerLevelMapCopy['users'].runtimeType}"');
+          'Repairing Power Level "users" has the wrong type "${powerLevelMapCopy['users'].runtimeType}"',
+        );
       }
       users = powerLevelMapCopy['users'] = <String, Object?>{};
     }
@@ -1228,17 +1276,26 @@ class Room {
         reason: reason,
       );
 
-  /// Request more previous events from the server. [historyCount] defines how much events should
+  /// Request more previous events from the server. [historyCount] defines how many events should
   /// be received maximum. When the request is answered, [onHistoryReceived] will be triggered **before**
-  /// the historical events will be published in the onEvent stream.
+  /// the historical events will be published in the onEvent stream. [filter] allows you to specify a
+  /// [StateFilter] object to filter the events, which can include various criteria such as event types
+  /// (e.g., [EventTypes.Message]) and other state-related filters. The [StateFilter] object will have
+  /// [lazyLoadMembers] set to true by default, but this can be overridden.
   /// Returns the actual count of received timeline events.
-  Future<int> requestHistory(
-      {int historyCount = defaultHistoryCount,
-      void Function()? onHistoryReceived,
-      direction = Direction.b}) async {
+  Future<int> requestHistory({
+    int historyCount = defaultHistoryCount,
+    void Function()? onHistoryReceived,
+    direction = Direction.b,
+    StateFilter? filter,
+  }) async {
     final prev_batch = this.prev_batch;
 
     final storeInDatabase = !isArchived;
+
+    // Ensure stateFilter is not null and set lazyLoadMembers to true if not already set
+    filter ??= StateFilter(lazyLoadMembers: true);
+    filter.lazyLoadMembers ??= true;
 
     if (prev_batch == null) {
       throw 'Tried to request history without a prev_batch token';
@@ -1248,7 +1305,7 @@ class Room {
       direction,
       from: prev_batch,
       limit: historyCount,
-      filter: jsonEncode(StateFilter(lazyLoadMembers: true).toJson()),
+      filter: jsonEncode(filter.toJson()),
     );
 
     if (onHistoryReceived != null) onHistoryReceived();
@@ -1258,43 +1315,43 @@ class Room {
       if (!((resp.chunk.isNotEmpty) && resp.end != null)) return;
 
       await client.handleSync(
-          SyncUpdate(
-            nextBatch: '',
-            rooms: RoomsUpdate(
-                join: membership == Membership.join
-                    ? {
-                        id: JoinedRoomUpdate(
-                          state: resp.state,
-                          timeline: TimelineUpdate(
-                            limited: false,
-                            events: direction == Direction.b
-                                ? resp.chunk
-                                : resp.chunk.reversed.toList(),
-                            prevBatch: direction == Direction.b
-                                ? resp.end
-                                : resp.start,
-                          ),
-                        )
-                      }
-                    : null,
-                leave: membership != Membership.join
-                    ? {
-                        id: LeftRoomUpdate(
-                          state: resp.state,
-                          timeline: TimelineUpdate(
-                            limited: false,
-                            events: direction == Direction.b
-                                ? resp.chunk
-                                : resp.chunk.reversed.toList(),
-                            prevBatch: direction == Direction.b
-                                ? resp.end
-                                : resp.start,
-                          ),
-                        ),
-                      }
-                    : null),
+        SyncUpdate(
+          nextBatch: '',
+          rooms: RoomsUpdate(
+            join: membership == Membership.join
+                ? {
+                    id: JoinedRoomUpdate(
+                      state: resp.state,
+                      timeline: TimelineUpdate(
+                        limited: false,
+                        events: direction == Direction.b
+                            ? resp.chunk
+                            : resp.chunk.reversed.toList(),
+                        prevBatch:
+                            direction == Direction.b ? resp.end : resp.start,
+                      ),
+                    ),
+                  }
+                : null,
+            leave: membership != Membership.join
+                ? {
+                    id: LeftRoomUpdate(
+                      state: resp.state,
+                      timeline: TimelineUpdate(
+                        limited: false,
+                        events: direction == Direction.b
+                            ? resp.chunk
+                            : resp.chunk.reversed.toList(),
+                        prevBatch:
+                            direction == Direction.b ? resp.end : resp.start,
+                      ),
+                    ),
+                  }
+                : null,
           ),
-          direction: Direction.b);
+        ),
+        direction: Direction.b,
+      );
     }
 
     if (client.database != null) {
@@ -1368,8 +1425,11 @@ class Room {
   /// read receipt's location.
   /// If you set `public` to false, only a private receipt will be sent. A private receipt is always sent if `mRead` is set. If no value is provided, the default from the `client` is used.
   /// You can leave out the `eventId`, which will not update the read marker but just send receipts, but there are few cases where that makes sense.
-  Future<void> setReadMarker(String? eventId,
-      {String? mRead, bool? public}) async {
+  Future<void> setReadMarker(
+    String? eventId, {
+    String? mRead,
+    bool? public,
+  }) async {
     await client.setReadMarker(
       id,
       mFullyRead: eventId,
@@ -1381,15 +1441,16 @@ class Room {
   }
 
   Future<TimelineChunk?> getEventContext(String eventId) async {
-    final resp = await client.getEventContext(id, eventId,
-        limit: Room.defaultHistoryCount
-        // filter: jsonEncode(StateFilter(lazyLoadMembers: true).toJson()),
-        );
+    final resp = await client.getEventContext(
+      id, eventId,
+      limit: Room.defaultHistoryCount,
+      // filter: jsonEncode(StateFilter(lazyLoadMembers: true).toJson()),
+    );
 
     final events = [
       if (resp.eventsAfter != null) ...resp.eventsAfter!.reversed,
       if (resp.event != null) resp.event!,
-      if (resp.eventsBefore != null) ...resp.eventsBefore!
+      if (resp.eventsBefore != null) ...resp.eventsBefore!,
     ].map((e) => Event.fromMatrixEvent(e, this)).toList();
 
     // Try again to decrypt encrypted events but don't update the database.
@@ -1406,7 +1467,10 @@ class Room {
     }
 
     final chunk = TimelineChunk(
-        nextBatch: resp.end ?? '', prevBatch: resp.start ?? '', events: events);
+      nextBatch: resp.end ?? '',
+      prevBatch: resp.start ?? '',
+      events: events,
+    );
 
     return chunk;
   }
@@ -1415,9 +1479,12 @@ class Room {
   /// specified. In general you want to use `setReadMarker` instead to set private
   /// and public receipt as well as the marker at the same time.
   @Deprecated(
-      'Use setReadMarker with mRead set instead. That allows for more control and there are few cases to not send a marker at the same time.')
-  Future<void> postReceipt(String eventId,
-      {ReceiptType type = ReceiptType.mRead}) async {
+    'Use setReadMarker with mRead set instead. That allows for more control and there are few cases to not send a marker at the same time.',
+  )
+  Future<void> postReceipt(
+    String eventId, {
+    ReceiptType type = ReceiptType.mRead,
+  }) async {
     await client.postReceipt(
       id,
       ReceiptType.mRead,
@@ -1435,13 +1502,14 @@ class Room {
   /// [onChange], [onRemove], [onInsert] and the [onHistoryReceived] callbacks.
   /// This method can also retrieve the timeline at a specific point by setting
   /// the [eventContextId]
-  Future<Timeline> getTimeline(
-      {void Function(int index)? onChange,
-      void Function(int index)? onRemove,
-      void Function(int insertID)? onInsert,
-      void Function()? onNewEvent,
-      void Function()? onUpdate,
-      String? eventContextId}) async {
+  Future<Timeline> getTimeline({
+    void Function(int index)? onChange,
+    void Function(int index)? onRemove,
+    void Function(int insertID)? onInsert,
+    void Function()? onNewEvent,
+    void Function()? onUpdate,
+    String? eventContextId,
+  }) async {
     await postLoad();
 
     List<Event> events;
@@ -1478,13 +1546,14 @@ class Room {
     }
 
     final timeline = Timeline(
-        room: this,
-        chunk: chunk,
-        onChange: onChange,
-        onRemove: onRemove,
-        onInsert: onInsert,
-        onNewEvent: onNewEvent,
-        onUpdate: onUpdate);
+      room: this,
+      chunk: chunk,
+      onChange: onChange,
+      onRemove: onRemove,
+      onInsert: onInsert,
+      onNewEvent: onNewEvent,
+      onUpdate: onUpdate,
+    );
 
     // Fetch all users from database we have got here.
     if (eventContextId == null) {
@@ -1536,12 +1605,13 @@ class Room {
   /// List `membershipFilter` defines with what membership do you want the
   /// participants, default set to
   /// [[Membership.join, Membership.invite, Membership.knock]]
-  List<User> getParticipants(
-      [List<Membership> membershipFilter = const [
-        Membership.join,
-        Membership.invite,
-        Membership.knock,
-      ]]) {
+  List<User> getParticipants([
+    List<Membership> membershipFilter = const [
+      Membership.join,
+      Membership.invite,
+      Membership.knock,
+    ],
+  ]) {
     final members = states[EventTypes.RoomMember];
     if (members != null) {
       return members.entries
@@ -1560,14 +1630,17 @@ class Room {
   /// [[Membership.join, Membership.invite, Membership.knock]]
   /// Set [cache] to `false` if you do not want to cache the users in memory
   /// for this session which is highly recommended for large public rooms.
-  Future<List<User>> requestParticipants(
-      [List<Membership> membershipFilter = const [
-        Membership.join,
-        Membership.invite,
-        Membership.knock,
-      ],
-      bool suppressWarning = false,
-      bool cache = true]) async {
+  /// By default users are only cached in encrypted rooms as encrypted rooms
+  /// need a full member list.
+  Future<List<User>> requestParticipants([
+    List<Membership> membershipFilter = const [
+      Membership.join,
+      Membership.invite,
+      Membership.knock,
+    ],
+    bool suppressWarning = false,
+    bool? cache,
+  ]) async {
     if (!participantListComplete || partial) {
       // we aren't fully loaded, maybe the users are in the database
       // We always need to check the database in the partial case, since state
@@ -1584,6 +1657,8 @@ class Room {
     if (participantListComplete) {
       return getParticipants(membershipFilter);
     }
+
+    cache ??= encrypted;
 
     final memberCount = summary.mJoinedMemberCount;
     if (!suppressWarning && cache && memberCount != null && memberCount > 100) {
@@ -1603,6 +1678,14 @@ class Room {
     if (cache) {
       for (final user in users) {
         setState(user); // at *least* cache this in-memory
+        await client.database?.storeEventUpdate(
+          EventUpdate(
+            roomID: id,
+            type: EventUpdateType.state,
+            content: user.toJson(),
+          ),
+          client,
+        );
       }
     }
 
@@ -1624,7 +1707,8 @@ class Room {
   }
 
   @Deprecated(
-      'The method was renamed unsafeGetUserFromMemoryOrFallback. Please prefer requestParticipants.')
+    'The method was renamed unsafeGetUserFromMemoryOrFallback. Please prefer requestParticipants.',
+  )
   User getUserByMXIDSync(String mxID) {
     return unsafeGetUserFromMemoryOrFallback(mxID);
   }
@@ -1801,12 +1885,14 @@ class Room {
     final cache = _inflightUserRequests[parameters] ??= AsyncCache.ephemeral();
 
     try {
-      final user = await cache.fetch(() => _requestUser(
-            mxID,
-            ignoreErrors: ignoreErrors,
-            requestState: requestState,
-            requestProfile: requestProfile,
-          ));
+      final user = await cache.fetch(
+        () => _requestUser(
+          mxID,
+          ignoreErrors: ignoreErrors,
+          requestState: requestState,
+          requestProfile: requestProfile,
+        ),
+      );
       _inflightUserRequests.remove(parameters);
       return user;
     } catch (_) {
@@ -1937,7 +2023,7 @@ class Room {
       final eventsMap = newPowerLevelMap.tryGetMap<String, Object?>('events') ??
           <String, Object?>{};
       eventsMap.addAll({
-        EventTypes.GroupCallMember: getDefaultPowerLevel(currentPowerLevelsMap)
+        EventTypes.GroupCallMember: getDefaultPowerLevel(currentPowerLevelsMap),
       });
       newPowerLevelMap.addAll({'events': eventsMap});
       await client.setRoomStateWithKey(
@@ -2027,16 +2113,22 @@ class Room {
   /// Returns the [PushRuleState] for this room, based on the m.push_rules stored in
   /// the account_data.
   PushRuleState get pushRuleState {
-    final globalPushRules =
-        client.accountData['m.push_rules']?.content['global'];
-    if (globalPushRules is! Map) {
+    final globalPushRules = client.globalPushRules;
+    if (globalPushRules == null) {
+      // We have no push rules specified at all so we fallback to just notify:
       return PushRuleState.notify;
     }
 
-    if (globalPushRules['override'] is List) {
-      for (final pushRule in globalPushRules['override']) {
-        if (pushRule['rule_id'] == id) {
-          if (pushRule['actions'].indexOf('dont_notify') != -1) {
+    final overridePushRules = globalPushRules.override;
+    if (overridePushRules != null) {
+      for (final pushRule in overridePushRules) {
+        if (pushRule.ruleId == id) {
+          // "dont_notify" and "coalesce" should be ignored in actions since
+          // https://spec.matrix.org/v1.7/client-server-api/#actions
+          pushRule.actions
+            ..remove('dont_notify')
+            ..remove('coalesce');
+          if (pushRule.actions.isEmpty) {
             return PushRuleState.dontNotify;
           }
           break;
@@ -2044,10 +2136,16 @@ class Room {
       }
     }
 
-    if (globalPushRules['room'] is List) {
-      for (final pushRule in globalPushRules['room']) {
-        if (pushRule['rule_id'] == id) {
-          if (pushRule['actions'].indexOf('dont_notify') != -1) {
+    final roomPushRules = globalPushRules.room;
+    if (roomPushRules != null) {
+      for (final pushRule in roomPushRules) {
+        if (pushRule.ruleId == id) {
+          // "dont_notify" and "coalesce" should be ignored in actions since
+          // https://spec.matrix.org/v1.7/client-server-api/#actions
+          pushRule.actions
+            ..remove('dont_notify')
+            ..remove('coalesce');
+          if (pushRule.actions.isEmpty) {
             return PushRuleState.mentionsOnly;
           }
           break;
@@ -2079,13 +2177,13 @@ class Room {
           await client.setPushRule(
             PushRuleKind.room,
             id,
-            [PushRuleAction.dontNotify],
+            [],
           );
         } else if (pushRuleState == PushRuleState.notify) {
           await client.setPushRule(
             PushRuleKind.room,
             id,
-            [PushRuleAction.dontNotify],
+            [],
           );
         }
         break;
@@ -2097,9 +2195,9 @@ class Room {
         await client.setPushRule(
           PushRuleKind.override,
           id,
-          [PushRuleAction.dontNotify],
+          [],
           conditions: [
-            PushCondition(kind: 'event_match', key: 'room_id', pattern: id)
+            PushCondition(kind: 'event_match', key: 'room_id', pattern: id),
           ],
         );
     }
@@ -2107,8 +2205,11 @@ class Room {
   }
 
   /// Redacts this event. Throws `ErrorResponse` on error.
-  Future<String?> redactEvent(String eventId,
-      {String? reason, String? txid}) async {
+  Future<String?> redactEvent(
+    String eventId, {
+    String? reason,
+    String? txid,
+  }) async {
     // Create new transaction id
     String messageID;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -2167,7 +2268,8 @@ class Room {
         ?.content
         .tryGet<String>('guest_access');
     return GuestAccess.values.singleWhereOrNull(
-            (element) => element.text == guestAccessString) ??
+          (element) => element.text == guestAccessString,
+        ) ??
         GuestAccess.forbidden;
   }
 
@@ -2193,7 +2295,8 @@ class Room {
         ?.content
         .tryGet<String>('history_visibility');
     return HistoryVisibility.values.singleWhereOrNull(
-        (element) => element.text == historyVisibilityString);
+      (element) => element.text == historyVisibilityString,
+    );
   }
 
   /// Changes the history visibility. You should check first if the user is able to change it.
@@ -2259,8 +2362,10 @@ class Room {
     await client.encryption?.keyManager.request(this, sessionId, senderKey);
   }
 
-  Future<void> _handleFakeSync(SyncUpdate syncUpdate,
-      {Direction? direction}) async {
+  Future<void> _handleFakeSync(
+    SyncUpdate syncUpdate, {
+    Direction? direction,
+  }) async {
     if (client.database != null) {
       await client.database?.transaction(() async {
         await client.handleSync(syncUpdate, direction: direction);
@@ -2309,9 +2414,11 @@ class Room {
               .where((child) => child.via.isNotEmpty)
               .toList() ??
           [])
-    ..sort((a, b) => a.order.isEmpty || b.order.isEmpty
-        ? b.order.compareTo(a.order)
-        : a.order.compareTo(b.order));
+    ..sort(
+      (a, b) => a.order.isEmpty || b.order.isEmpty
+          ? b.order.compareTo(a.order)
+          : a.order.compareTo(b.order),
+    );
 
   /// Adds or edits a child of this space.
   Future<void> setSpaceChild(
@@ -2337,7 +2444,8 @@ class Room {
   Future<Uri> matrixToInviteLink() async {
     if (canonicalAlias.isNotEmpty) {
       return Uri.parse(
-          'https://matrix.to/#/${Uri.encodeComponent(canonicalAlias)}');
+        'https://matrix.to/#/${Uri.encodeComponent(canonicalAlias)}',
+      );
     }
     final List queryParameters = [];
     final users = await requestParticipants([Membership.join]);
@@ -2347,8 +2455,9 @@ class Room {
     temp.removeWhere((user) => user.powerLevel < 50);
     if (currentPowerLevelsMap != null) {
       // just for weird rooms
-      temp.removeWhere((user) =>
-          user.powerLevel < getDefaultPowerLevel(currentPowerLevelsMap));
+      temp.removeWhere(
+        (user) => user.powerLevel < getDefaultPowerLevel(currentPowerLevelsMap),
+      );
     }
 
     if (temp.isNotEmpty) {
@@ -2368,10 +2477,9 @@ class Room {
         }
       }
     }
-    final sortedServers = Map.fromEntries(servers.entries.toList()
-          ..sort((e1, e2) => e2.value.compareTo(e1.value)))
-        .keys
-        .take(3);
+    final sortedServers = Map.fromEntries(
+      servers.entries.toList()..sort((e1, e2) => e2.value.compareTo(e1.value)),
+    ).keys.take(3);
     for (final server in sortedServers) {
       if (!queryParameters.contains(server)) {
         queryParameters.add(server);
@@ -2386,7 +2494,8 @@ class Room {
       queryString += 'via=${queryParameters[i]}';
     }
     return Uri.parse(
-        'https://matrix.to/#/${Uri.encodeComponent(id)}$queryString');
+      'https://matrix.to/#/${Uri.encodeComponent(id)}$queryString',
+    );
   }
 
   /// Remove a child from this space by setting the `via` to an empty list.

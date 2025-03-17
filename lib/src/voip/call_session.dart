@@ -592,7 +592,6 @@ class CallSession {
         await addLocalStream(stream, SDPStreamMetadataPurpose.Screenshare);
         return true;
       } catch (err) {
-        fireCallEvent(CallStateChange.kError);
         return false;
       }
     } else {
@@ -1315,8 +1314,8 @@ class CallSession {
       return await voip.delegate.mediaDevices.getUserMedia(mediaConstraints);
     } catch (e) {
       await _getUserMediaFailed(e);
-      rethrow;
     }
+    return null;
   }
 
   Future<MediaStream?> _getDisplayMedia() async {
@@ -1324,7 +1323,7 @@ class CallSession {
       return await voip.delegate.mediaDevices
           .getDisplayMedia(UserMediaConstraints.screenMediaConstraints);
     } catch (e) {
-      await _getUserMediaFailed(e);
+      await _getDisplayMediaFailed(e);
     }
     return null;
   }
@@ -1489,6 +1488,18 @@ class CallSession {
     throw CallError(
       CallErrorCode.userMediaFailed,
       'Failed to get user media',
+      err,
+    );
+  }
+
+  Future<void> _getDisplayMediaFailed(dynamic err) async {
+    Logs().w('Failed to get display media - ending call ${err.toString()}');
+    fireCallEvent(CallStateChange.kError);
+    // We don't terminate the call here because the user might still want to stay
+    // on the call and try again later.
+    throw CallError(
+      CallErrorCode.displayMediaFailed,
+      'Failed to get display media',
       err,
     );
   }

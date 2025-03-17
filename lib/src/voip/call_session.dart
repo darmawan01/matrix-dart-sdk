@@ -1218,7 +1218,9 @@ class CallSession {
         }
       };
     } catch (e) {
-      Logs().v('[VOIP] prepareMediaStream error => ${e.toString()}');
+      Logs().v('[VOIP] preparePeerConnection error => ${e.toString()}');
+      await _createPeerConnectionFailed(e);
+      rethrow;
     }
   }
 
@@ -1454,17 +1456,41 @@ class CallSession {
     }
   }
 
+  Future<void> _createPeerConnectionFailed(dynamic err) async {
+    Logs().e('Failed to create peer connection object ${err.toString()}');
+    fireCallEvent(CallStateChange.kError);
+    await terminate(
+      CallParty.kLocal,
+      CallErrorCode.createPeerConnectionFailed,
+      true,
+    );
+    throw CallError(
+      CallErrorCode.createPeerConnectionFailed,
+      'Failed to create peer connection object ',
+      err,
+    );
+  }
+
   Future<void> _getLocalOfferFailed(dynamic err) async {
     Logs().e('Failed to get local offer ${err.toString()}');
     fireCallEvent(CallStateChange.kError);
-
     await terminate(CallParty.kLocal, CallErrorCode.localOfferFailed, true);
+    throw CallError(
+      CallErrorCode.localOfferFailed,
+      'Failed to get local offer',
+      err,
+    );
   }
 
   Future<void> _getUserMediaFailed(dynamic err) async {
     Logs().w('Failed to get user media - ending call ${err.toString()}');
     fireCallEvent(CallStateChange.kError);
     await terminate(CallParty.kLocal, CallErrorCode.userMediaFailed, true);
+    throw CallError(
+      CallErrorCode.userMediaFailed,
+      'Failed to get user media',
+      err,
+    );
   }
 
   Future<void> onSelectAnswerReceived(String? selectedPartyId) async {

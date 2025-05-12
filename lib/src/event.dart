@@ -23,7 +23,6 @@ import 'package:collection/collection.dart';
 import 'package:html/parser.dart';
 
 import 'package:matrix/matrix.dart';
-import 'package:matrix/src/utils/event_localizations.dart';
 import 'package:matrix/src/utils/file_send_request_credentials.dart';
 import 'package:matrix/src/utils/html_to_text.dart';
 import 'package:matrix/src/utils/markdown.dart';
@@ -44,7 +43,8 @@ class Event extends MatrixEvent {
       );
 
   @Deprecated(
-      'Use eventSender instead or senderFromMemoryOrFallback for a synchronous alternative')
+    'Use eventSender instead or senderFromMemoryOrFallback for a synchronous alternative',
+  )
   User get sender => senderFromMemoryOrFallback;
 
   User get senderFromMemoryOrFallback =>
@@ -77,6 +77,8 @@ class Event extends MatrixEvent {
 
   MatrixEvent? get originalSource => _originalSource;
 
+  String? get transactionId => unsigned?.tryGet<String>('transaction_id');
+
   Event({
     this.status = defaultStatus,
     required Map<String, dynamic> super.content,
@@ -87,6 +89,7 @@ class Event extends MatrixEvent {
     Map<String, dynamic>? unsigned,
     Map<String, dynamic>? prevContent,
     String? stateKey,
+    super.redacts,
     required this.room,
     MatrixEvent? originalSource,
   })  : _originalSource = originalSource,
@@ -123,7 +126,17 @@ class Event extends MatrixEvent {
           originServerTs.millisecondsSinceEpoch;
 
       final room = this.room;
-      if (age > room.client.sendTimelineEventTimeout.inMilliseconds) {
+
+      if (
+          // We don't want to mark the event as failed if it's the lastEvent in the room
+          // since that would be a race condition (with the same event from timeline)
+          // The `room.lastEvent` is null at the time this constructor is called for it,
+          // there's no other way to check this.
+          room.lastEvent?.eventId != null &&
+              // If the event is in the sending queue, then we don't mess with it.
+              !room.sendingQueueEventsByTxId.contains(transactionId) &&
+              // Else, if the event is older than the timeout, then we mark it as failed.
+              age > room.client.sendTimelineEventTimeout.inMilliseconds) {
         // Update this event in database and open timelines
         final json = toJson();
         json['unsigned'] ??= <String, dynamic>{};
@@ -138,7 +151,7 @@ class Event extends MatrixEvent {
                   timeline: TimelineUpdate(
                     events: [MatrixEvent.fromJson(json)],
                   ),
-                )
+                ),
               },
             ),
           ),
@@ -162,20 +175,28 @@ class Event extends MatrixEvent {
   factory Event.fromMatrixEvent(
     MatrixEvent matrixEvent,
     Room room, {
-    EventStatus status = defaultStatus,
+    EventStatus? status,
   }) =>
-      Event(
-        status: status,
-        content: matrixEvent.content,
-        type: matrixEvent.type,
-        eventId: matrixEvent.eventId,
-        senderId: matrixEvent.senderId,
-        originServerTs: matrixEvent.originServerTs,
-        unsigned: matrixEvent.unsigned,
-        prevContent: matrixEvent.prevContent,
-        stateKey: matrixEvent.stateKey,
-        room: room,
-      );
+      matrixEvent is Event
+          ? matrixEvent
+          : Event(
+              status: status ??
+                  eventStatusFromInt(
+                    matrixEvent.unsigned
+                            ?.tryGet<int>(messageSendingStatusKey) ??
+                        defaultStatus.intValue,
+                  ),
+              content: matrixEvent.content,
+              type: matrixEvent.type,
+              eventId: matrixEvent.eventId,
+              senderId: matrixEvent.senderId,
+              originServerTs: matrixEvent.originServerTs,
+              unsigned: matrixEvent.unsigned,
+              prevContent: matrixEvent.prevContent,
+              stateKey: matrixEvent.stateKey,
+              redacts: matrixEvent.redacts,
+              room: room,
+            );
 
   /// Get a State event from a table row or from the event stream.
   factory Event.fromJson(
@@ -188,22 +209,26 @@ class Event extends MatrixEvent {
     final originalSource =
         Event.getMapFromPayload(jsonPayload['original_source']);
     return Event(
-        status: eventStatusFromInt(jsonPayload['status'] ??
+      status: eventStatusFromInt(
+        jsonPayload['status'] ??
             unsigned[messageSendingStatusKey] ??
-            defaultStatus.intValue),
-        stateKey: jsonPayload['state_key'],
-        prevContent: prevContent,
-        content: content,
-        type: jsonPayload['type'],
-        eventId: jsonPayload['event_id'] ?? '',
-        senderId: jsonPayload['sender'],
-        originServerTs: DateTime.fromMillisecondsSinceEpoch(
-            jsonPayload['origin_server_ts'] ?? 0),
-        unsigned: unsigned,
-        room: room,
-        originalSource: originalSource.isEmpty
-            ? null
-            : MatrixEvent.fromJson(originalSource));
+            defaultStatus.intValue,
+      ),
+      stateKey: jsonPayload['state_key'],
+      prevContent: prevContent,
+      content: content,
+      type: jsonPayload['type'],
+      eventId: jsonPayload['event_id'] ?? '',
+      senderId: jsonPayload['sender'],
+      originServerTs: DateTime.fromMillisecondsSinceEpoch(
+        jsonPayload['origin_server_ts'] ?? 0,
+      ),
+      unsigned: unsigned,
+      room: room,
+      redacts: jsonPayload['redacts'],
+      originalSource:
+          originalSource.isEmpty ? null : MatrixEvent.fromJson(originalSource),
+    );
   }
 
   @override
@@ -225,6 +250,9 @@ class Event extends MatrixEvent {
     if (originalSource != null) {
       data['original_source'] = originalSource?.toJson();
     }
+    if (redacts != null) {
+      data['redacts'] = redacts;
+    }
     data['status'] = status.intValue;
     return data;
   }
@@ -237,6 +265,7 @@ class Event extends MatrixEvent {
         typeKey: type,
         senderId: senderId,
         room: room,
+        originServerTs: originServerTs,
       );
 
   String get messageType => type == EventTypes.Sticker
@@ -311,9 +340,12 @@ class Event extends MatrixEvent {
     final receipts = room.receiptState;
     final receiptsList = receipts.global.otherUsers.entries
         .where((entry) => entry.value.eventId == eventId)
-        .map((entry) => Receipt(
+        .map(
+          (entry) => Receipt(
             room.unsafeGetUserFromMemoryOrFallback(entry.key),
-            entry.value.timestamp))
+            entry.value.timestamp,
+          ),
+        )
         .toList();
 
     // add your own only once
@@ -321,21 +353,31 @@ class Event extends MatrixEvent {
         receipts.mainThread?.latestOwnReceipt;
     if (own != null && own.eventId == eventId) {
       receiptsList.add(
-        Receipt(room.unsafeGetUserFromMemoryOrFallback(room.client.userID!),
-            own.timestamp),
+        Receipt(
+          room.unsafeGetUserFromMemoryOrFallback(room.client.userID!),
+          own.timestamp,
+        ),
       );
     }
 
     // also add main thread. https://github.com/famedly/product-management/issues/1020
     // also deduplicate.
-    receiptsList.addAll(receipts.mainThread?.otherUsers.entries
-            .where((entry) =>
-                entry.value.eventId == eventId &&
-                receiptsList.every((element) => element.user.id != entry.key))
-            .map((entry) => Receipt(
-                room.unsafeGetUserFromMemoryOrFallback(entry.key),
-                entry.value.timestamp)) ??
-        []);
+    receiptsList.addAll(
+      receipts.mainThread?.otherUsers.entries
+              .where(
+                (entry) =>
+                    entry.value.eventId == eventId &&
+                    receiptsList
+                        .every((element) => element.user.id != entry.key),
+              )
+              .map(
+                (entry) => Receipt(
+                  room.unsafeGetUserFromMemoryOrFallback(entry.key),
+                  entry.value.timestamp,
+                ),
+              ) ??
+          [],
+    );
 
     return receiptsList;
   }
@@ -383,7 +425,7 @@ class Event extends MatrixEvent {
                 timeline: TimelineUpdate(
                   events: [redactedBecause],
                 ),
-              )
+              ),
             },
           ),
         ),
@@ -413,10 +455,9 @@ class Event extends MatrixEvent {
       final inReplyTo = credentials.inReplyTo == null
           ? null
           : await room.getEventById(credentials.inReplyTo!);
-      txid ??= unsigned?.tryGet<String>('transaction_id');
       return await room.sendFileEvent(
         file,
-        txid: txid,
+        txid: txid ?? transactionId,
         thumbnail: thumbnail,
         inReplyTo: inReplyTo,
         editEventId: credentials.editEventId,
@@ -429,7 +470,7 @@ class Event extends MatrixEvent {
     // in the `sendEvent` method to transition -1 -> 0 -> 1 -> 2
     return await room.sendEvent(
       content,
-      txid: txid ?? unsigned?.tryGet<String>('transaction_id') ?? eventId,
+      txid: txid ?? transactionId ?? eventId,
     );
   }
 
@@ -440,13 +481,35 @@ class Event extends MatrixEvent {
   Future<String?> redactEvent({String? reason, String? txid}) async =>
       await room.redactEvent(eventId, reason: reason, txid: txid);
 
-  /// Searches for the reply event in the given timeline.
+  /// Searches for the reply event in the given timeline. Also returns the
+  /// event fallback if the relationship type is `m.thread`.
+  /// https://spec.matrix.org/v1.14/client-server-api/#fallback-for-unthreaded-clients
   Future<Event?> getReplyEvent(Timeline timeline) async {
-    if (relationshipType != RelationshipTypes.reply) return null;
-    final relationshipEventId = this.relationshipEventId;
-    return relationshipEventId == null
-        ? null
-        : await timeline.getEventById(relationshipEventId);
+    switch (relationshipType) {
+      case RelationshipTypes.reply:
+        final relationshipEventId = this.relationshipEventId;
+        return relationshipEventId == null
+            ? null
+            : await timeline.getEventById(relationshipEventId);
+
+      case RelationshipTypes.thread:
+        final relationshipContent =
+            content.tryGetMap<String, Object?>('m.relates_to');
+        if (relationshipContent == null) return null;
+        final String? relationshipEventId;
+        if (relationshipContent.tryGet<bool>('is_falling_back') == true) {
+          relationshipEventId = relationshipContent
+              .tryGetMap<String, Object?>('m.in_reply_to')
+              ?.tryGet<String>('event_id');
+        } else {
+          relationshipEventId = this.relationshipEventId;
+        }
+        return relationshipEventId == null
+            ? null
+            : await timeline.getEventById(relationshipEventId);
+      default:
+        return null;
+    }
   }
 
   /// If this event is encrypted and the decryption was not successful because
@@ -553,14 +616,15 @@ class Event extends MatrixEvent {
   ///
   /// Important! To use this link you have to set a http header like this:
   /// `headers: {"authorization": "Bearer ${client.accessToken}"}`
-  Future<Uri?> getAttachmentUri(
-      {bool getThumbnail = false,
-      bool useThumbnailMxcUrl = false,
-      double width = 800.0,
-      double height = 800.0,
-      ThumbnailMethod method = ThumbnailMethod.scale,
-      int minNoThumbSize = _minNoThumbSize,
-      bool animated = false}) async {
+  Future<Uri?> getAttachmentUri({
+    bool getThumbnail = false,
+    bool useThumbnailMxcUrl = false,
+    double width = 800.0,
+    double height = 800.0,
+    ThumbnailMethod method = ThumbnailMethod.scale,
+    int minNoThumbSize = _minNoThumbSize,
+    bool animated = false,
+  }) async {
     if (![EventTypes.Message, EventTypes.Sticker].contains(type) ||
         !hasAttachment ||
         isAttachmentEncrypted) {
@@ -607,14 +671,15 @@ class Event extends MatrixEvent {
   /// Important! To use this link you have to set a http header like this:
   /// `headers: {"authorization": "Bearer ${client.accessToken}"}`
   @Deprecated('Use getAttachmentUri() instead')
-  Uri? getAttachmentUrl(
-      {bool getThumbnail = false,
-      bool useThumbnailMxcUrl = false,
-      double width = 800.0,
-      double height = 800.0,
-      ThumbnailMethod method = ThumbnailMethod.scale,
-      int minNoThumbSize = _minNoThumbSize,
-      bool animated = false}) {
+  Uri? getAttachmentUrl({
+    bool getThumbnail = false,
+    bool useThumbnailMxcUrl = false,
+    double width = 800.0,
+    double height = 800.0,
+    ThumbnailMethod method = ThumbnailMethod.scale,
+    int minNoThumbSize = _minNoThumbSize,
+    bool animated = false,
+  }) {
     if (![EventTypes.Message, EventTypes.Sticker].contains(type) ||
         !hasAttachment ||
         isAttachmentEncrypted) {
@@ -680,10 +745,11 @@ class Event extends MatrixEvent {
   /// true to download the thumbnail instead. Set [fromLocalStoreOnly] to true
   /// if you want to retrieve the attachment from the local store only without
   /// making http request.
-  Future<MatrixFile> downloadAndDecryptAttachment(
-      {bool getThumbnail = false,
-      Future<Uint8List> Function(Uri)? downloadCallback,
-      bool fromLocalStoreOnly = false}) async {
+  Future<MatrixFile> downloadAndDecryptAttachment({
+    bool getThumbnail = false,
+    Future<Uint8List> Function(Uri)? downloadCallback,
+    bool fromLocalStoreOnly = false,
+  }) async {
     if (![EventTypes.Message, EventTypes.Sticker].contains(type)) {
       throw ("This event has the type '$type' and so it can't contain an attachment.");
     }
@@ -730,7 +796,10 @@ class Event extends MatrixEvent {
           uint8list.lengthInBytes < database.maxFileSize;
       if (storeable) {
         await database.storeFile(
-            mxcUrl, uint8list, DateTime.now().millisecondsSinceEpoch);
+          mxcUrl,
+          uint8list,
+          DateTime.now().millisecondsSinceEpoch,
+        );
       }
     } else if (uint8list == null) {
       throw ('Unable to download file from local store.');
@@ -755,7 +824,13 @@ class Event extends MatrixEvent {
         throw ('Unable to decrypt file');
       }
     }
-    return MatrixFile(bytes: uint8list, name: body);
+
+    final filename = content.tryGet<String>('filename') ?? body;
+    return MatrixFile(
+      bytes: uint8list,
+      name: filename,
+      mimeType: attachmentMimetype,
+    );
   }
 
   /// Returns if this is a known event type.
@@ -771,12 +846,14 @@ class Event extends MatrixEvent {
   /// it to plain text.
   /// [removeMarkdown] allow to remove the markdown formating from the event body.
   /// Usefull form message preview or notifications text.
-  Future<String> calcLocalizedBody(MatrixLocalizations i18n,
-      {bool withSenderNamePrefix = false,
-      bool hideReply = false,
-      bool hideEdit = false,
-      bool plaintextBody = false,
-      bool removeMarkdown = false}) async {
+  Future<String> calcLocalizedBody(
+    MatrixLocalizations i18n, {
+    bool withSenderNamePrefix = false,
+    bool hideReply = false,
+    bool hideEdit = false,
+    bool plaintextBody = false,
+    bool removeMarkdown = false,
+  }) async {
     if (redacted) {
       await redactedBecause?.fetchSenderUser();
     }
@@ -799,30 +876,36 @@ class Event extends MatrixEvent {
   }
 
   @Deprecated('Use calcLocalizedBody or calcLocalizedBodyFallback')
-  String getLocalizedBody(MatrixLocalizations i18n,
-          {bool withSenderNamePrefix = false,
-          bool hideReply = false,
-          bool hideEdit = false,
-          bool plaintextBody = false,
-          bool removeMarkdown = false}) =>
-      calcLocalizedBodyFallback(i18n,
-          withSenderNamePrefix: withSenderNamePrefix,
-          hideReply: hideReply,
-          hideEdit: hideEdit,
-          plaintextBody: plaintextBody,
-          removeMarkdown: removeMarkdown);
+  String getLocalizedBody(
+    MatrixLocalizations i18n, {
+    bool withSenderNamePrefix = false,
+    bool hideReply = false,
+    bool hideEdit = false,
+    bool plaintextBody = false,
+    bool removeMarkdown = false,
+  }) =>
+      calcLocalizedBodyFallback(
+        i18n,
+        withSenderNamePrefix: withSenderNamePrefix,
+        hideReply: hideReply,
+        hideEdit: hideEdit,
+        plaintextBody: plaintextBody,
+        removeMarkdown: removeMarkdown,
+      );
 
   /// Works similar to `calcLocalizedBody()` but does not wait for the sender
   /// user to be fetched. If it is not in the cache it will just use the
   /// fallback and display the localpart of the MXID according to the
   /// values of `formatLocalpart` and `mxidLocalPartFallback` in the `Client`
   /// class.
-  String calcLocalizedBodyFallback(MatrixLocalizations i18n,
-      {bool withSenderNamePrefix = false,
-      bool hideReply = false,
-      bool hideEdit = false,
-      bool plaintextBody = false,
-      bool removeMarkdown = false}) {
+  String calcLocalizedBodyFallback(
+    MatrixLocalizations i18n, {
+    bool withSenderNamePrefix = false,
+    bool hideReply = false,
+    bool hideEdit = false,
+    bool plaintextBody = false,
+    bool removeMarkdown = false,
+  }) {
     if (redacted) {
       if (status.intValue < EventStatus.synced.intValue) {
         return i18n.cancelledSend;
@@ -896,16 +979,16 @@ class Event extends MatrixEvent {
     // if the message is formatted
     if (hideReply && mayHaveReplyFallback) {
       body = body.replaceFirst(
-          RegExp(r'^>( \*)? <[^>]+>[^\n\r]+\r?\n(> [^\n]*\r?\n)*\r?\n'), '');
+        RegExp(r'^>( \*)? <[^>]+>[^\n\r]+\r?\n(> [^\n]*\r?\n)*\r?\n'),
+        '',
+      );
     }
 
     // return the html tags free body
     if (removeMarkdown == true) {
       final html = markdown(body, convertLinebreaks: false);
-      final document = parse(
-        html,
-      );
-      body = document.documentElement?.text ?? body;
+      final document = parse(html);
+      body = document.documentElement?.text.trim() ?? body;
     }
     return body;
   }
@@ -925,7 +1008,7 @@ class Event extends MatrixEvent {
     if (eventId == search) {
       return true;
     }
-    return unsigned?['transaction_id'] == search;
+    return transactionId == search;
   }
 
   /// Get the relationship type of an event. `null` if there is none
@@ -979,11 +1062,13 @@ class Event extends MatrixEvent {
       // we need to check again if it isn't empty, as we potentially removed all
       // aggregated edits
       if (allEditEvents.isNotEmpty) {
-        allEditEvents.sort((a, b) => a.originServerTs.millisecondsSinceEpoch -
-                    b.originServerTs.millisecondsSinceEpoch >
-                0
-            ? 1
-            : -1);
+        allEditEvents.sort(
+          (a, b) => a.originServerTs.millisecondsSinceEpoch -
+                      b.originServerTs.millisecondsSinceEpoch >
+                  0
+              ? 1
+              : -1,
+        );
         final rawEvent = allEditEvents.last.toJson();
         // update the content of the new event to render
         if (rawEvent['content']['m.new_content'] is Map) {
@@ -1051,9 +1136,14 @@ class Event extends MatrixEvent {
     if (isRichMessage) {
       // calcUnlocalizedBody strips out the <img /> tags in favor of a :placeholder:
       final formattedTextStripped = formattedText.replaceAll(
-          RegExp('<mx-reply>.*</mx-reply>',
-              caseSensitive: false, multiLine: false, dotAll: true),
-          '');
+        RegExp(
+          '<mx-reply>.*</mx-reply>',
+          caseSensitive: false,
+          multiLine: false,
+          dotAll: true,
+        ),
+        '',
+      );
       return _onlyEmojiEmoteRegex.hasMatch(formattedTextStripped);
     } else {
       return _onlyEmojiRegex.hasMatch(plaintextBody);
@@ -1068,9 +1158,14 @@ class Event extends MatrixEvent {
     if (isRichMessage) {
       // calcUnlocalizedBody strips out the <img /> tags in favor of a :placeholder:
       final formattedTextStripped = formattedText.replaceAll(
-          RegExp('<mx-reply>.*</mx-reply>',
-              caseSensitive: false, multiLine: false, dotAll: true),
-          '');
+        RegExp(
+          '<mx-reply>.*</mx-reply>',
+          caseSensitive: false,
+          multiLine: false,
+          dotAll: true,
+        ),
+        '',
+      );
       return _countEmojiEmoteRegex.allMatches(formattedTextStripped).length;
     } else {
       return _countEmojiRegex.allMatches(plaintextBody).length;
@@ -1083,7 +1178,8 @@ class Event extends MatrixEvent {
     final status = unsigned?.tryGet<String>(fileSendingStatusKey);
     if (status == null) return null;
     return FileSendingStatus.values.singleWhereOrNull(
-        (fileSendingStatus) => fileSendingStatus.name == status);
+      (fileSendingStatus) => fileSendingStatus.name == status,
+    );
   }
 }
 

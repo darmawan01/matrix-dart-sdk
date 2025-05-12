@@ -1,8 +1,6 @@
 import 'dart:core' as dart;
 import 'dart:core';
 
-import 'package:enhanced_enum/enhanced_enum.dart';
-
 import 'package:matrix/matrix_api_lite/model/children_state.dart';
 import 'package:matrix/matrix_api_lite/model/matrix_event.dart';
 import 'package:matrix/matrix_api_lite/model/matrix_keys.dart';
@@ -80,14 +78,18 @@ class DiscoveryInformation {
 
   DiscoveryInformation.fromJson(Map<String, Object?> json)
       : mHomeserver = HomeserverInformation.fromJson(
-            json['m.homeserver'] as Map<String, Object?>),
+          json['m.homeserver'] as Map<String, Object?>,
+        ),
         mIdentityServer = ((v) => v != null
             ? IdentityServerInformation.fromJson(v as Map<String, Object?>)
             : null)(json['m.identity_server']),
-        additionalProperties = Map.fromEntries(json.entries
-            .where(
-                (e) => !['m.homeserver', 'm.identity_server'].contains(e.key))
-            .map((e) => MapEntry(e.key, e.value)));
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where(
+                (e) => !['m.homeserver', 'm.identity_server'].contains(e.key),
+              )
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final mIdentityServer = this.mIdentityServer;
     return {
@@ -120,12 +122,12 @@ class DiscoveryInformation {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum Role {
-  @EnhancedEnumValue(name: 'm.role.admin')
-  mRoleAdmin,
-  @EnhancedEnumValue(name: 'm.role.security')
-  mRoleSecurity
+  mRoleAdmin('m.role.admin'),
+  mRoleSecurity('m.role.security');
+
+  final String name;
+  const Role(this.name);
 }
 
 /// A way to contact the server administrator.
@@ -207,15 +209,15 @@ class GetWellknownSupportResponse {
                 .map((v) => Contact.fromJson(v as Map<String, Object?>))
                 .toList()
             : null)(json['contacts']),
-        supportPage =
-            ((v) => v != null ? v as String : null)(json['support_page']);
+        supportPage = ((v) =>
+            v != null ? Uri.parse(v as String) : null)(json['support_page']);
   Map<String, Object?> toJson() {
     final contacts = this.contacts;
     final supportPage = this.supportPage;
     return {
       if (contacts != null)
         'contacts': contacts.map((v) => v.toJson()).toList(),
-      if (supportPage != null) 'support_page': supportPage,
+      if (supportPage != null) 'support_page': supportPage.toString(),
     };
   }
 
@@ -230,7 +232,7 @@ class GetWellknownSupportResponse {
   /// homeserver, like extra login/registration steps.
   ///
   /// At least one of `contacts` or `support_page` is required.
-  String? supportPage;
+  Uri? supportPage;
 
   @dart.override
   bool operator ==(Object other) =>
@@ -354,12 +356,12 @@ class PreviewForUrl {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum Method {
-  @EnhancedEnumValue(name: 'crop')
-  crop,
-  @EnhancedEnumValue(name: 'scale')
-  scale
+  crop('crop'),
+  scale('scale');
+
+  final String name;
+  const Method(this.name);
 }
 
 ///
@@ -462,8 +464,18 @@ class PublicRoomsChunk {
           other.worldReadable == worldReadable);
 
   @dart.override
-  int get hashCode => Object.hash(avatarUrl, canonicalAlias, guestCanJoin,
-      joinRule, name, numJoinedMembers, roomId, roomType, topic, worldReadable);
+  int get hashCode => Object.hash(
+        avatarUrl,
+        canonicalAlias,
+        guestCanJoin,
+        joinRule,
+        name,
+        numJoinedMembers,
+        roomId,
+        roomType,
+        topic,
+        worldReadable,
+      );
 }
 
 ///
@@ -487,8 +499,8 @@ class SpaceHierarchyRoomsChunk {
     };
   }
 
-  /// The [`m.space.child`](#mspacechild) events of the space-room, represented
-  /// as [Stripped State Events](#stripped-state) with an added `origin_server_ts` key.
+  /// The [`m.space.child`](https://spec.matrix.org/unstable/client-server-api/#mspacechild) events of the space-room, represented
+  /// as [Stripped State Events](https://spec.matrix.org/unstable/client-server-api/#stripped-state) with an added `origin_server_ts` key.
   ///
   /// If the room is not a space-room, this should be empty.
   List<ChildrenState> childrenState;
@@ -607,8 +619,8 @@ class SpaceRoomsChunk implements PublicRoomsChunk, SpaceHierarchyRoomsChunk {
   @override
   bool worldReadable;
 
-  /// The [`m.space.child`](#mspacechild) events of the space-room, represented
-  /// as [Stripped State Events](#stripped-state) with an added `origin_server_ts` key.
+  /// The [`m.space.child`](https://spec.matrix.org/unstable/client-server-api/#mspacechild) events of the space-room, represented
+  /// as [Stripped State Events](https://spec.matrix.org/unstable/client-server-api/#stripped-state) with an added `origin_server_ts` key.
   ///
   /// If the room is not a space-room, this should be empty.
   @override
@@ -633,17 +645,18 @@ class SpaceRoomsChunk implements PublicRoomsChunk, SpaceHierarchyRoomsChunk {
 
   @dart.override
   int get hashCode => Object.hash(
-      avatarUrl,
-      canonicalAlias,
-      guestCanJoin,
-      joinRule,
-      name,
-      numJoinedMembers,
-      roomId,
-      roomType,
-      topic,
-      worldReadable,
-      childrenState);
+        avatarUrl,
+        canonicalAlias,
+        guestCanJoin,
+        joinRule,
+        name,
+        numJoinedMembers,
+        roomId,
+        roomType,
+        topic,
+        worldReadable,
+        childrenState,
+      );
 }
 
 ///
@@ -672,6 +685,16 @@ class GetSpaceHierarchyResponse {
   String? nextBatch;
 
   /// The rooms for the current page, with the current filters.
+  ///
+  /// The server should return any rooms where at least one of the following conditions is true:
+  ///
+  /// * The requesting user is currently a member (their [room membership](#room-membership) is `join`).
+  /// * The requesting user already has permission to join, i.e. one of the following:
+  ///   * The user's room membership is `invite`.
+  ///   * The room's [join rules](#mroomjoin_rules) are set to `public`.
+  ///   * The room's join rules are set to [`restricted`](#restricted-rooms), provided the user meets one of the specified conditions.
+  /// * The room is "knockable" (the room's join rules are set to `knock`, or `knock_restricted`, in a room version that supports those settings).
+  /// * The room's [`m.room.history_visibility`](#room-history-visibility) is set to `world_readable`.
   List<SpaceRoomsChunk> rooms;
 
   @dart.override
@@ -688,12 +711,12 @@ class GetSpaceHierarchyResponse {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum Direction {
-  @EnhancedEnumValue(name: 'b')
-  b,
-  @EnhancedEnumValue(name: 'f')
-  f
+  b('b'),
+  f('f');
+
+  final String name;
+  const Direction(this.name);
 }
 
 ///
@@ -831,8 +854,8 @@ class GetRelatingEventsWithRelTypeAndEventTypeResponse {
   });
 
   GetRelatingEventsWithRelTypeAndEventTypeResponse.fromJson(
-      Map<String, Object?> json)
-      : chunk = (json['chunk'] as List)
+    Map<String, Object?> json,
+  )   : chunk = (json['chunk'] as List)
             .map((v) => MatrixEvent.fromJson(v as Map<String, Object?>))
             .toList(),
         nextBatch = ((v) => v != null ? v as String : null)(json['next_batch']),
@@ -885,12 +908,12 @@ class GetRelatingEventsWithRelTypeAndEventTypeResponse {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum Include {
-  @EnhancedEnumValue(name: 'all')
-  all,
-  @EnhancedEnumValue(name: 'participated')
-  participated
+  all('all'),
+  participated('participated');
+
+  final String name;
+  const Include(this.name);
 }
 
 ///
@@ -977,12 +1000,12 @@ class GetEventByTimestampResponse {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum ThirdPartyIdentifierMedium {
-  @EnhancedEnumValue(name: 'email')
-  email,
-  @EnhancedEnumValue(name: 'msisdn')
-  msisdn
+  email('email'),
+  msisdn('msisdn');
+
+  final String name;
+  const ThirdPartyIdentifierMedium(this.name);
 }
 
 ///
@@ -1087,12 +1110,12 @@ class ThreePidCredentials {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum IdServerUnbindResult {
-  @EnhancedEnumValue(name: 'no-support')
-  noSupport,
-  @EnhancedEnumValue(name: 'success')
-  success
+  noSupport('no-support'),
+  success('success');
+
+  final String name;
+  const IdServerUnbindResult(this.name);
 }
 
 ///
@@ -1173,9 +1196,9 @@ class TokenOwnerInfo {
   /// Otherwise this is required.
   String? deviceId;
 
-  /// When `true`, the user is a [Guest User](#guest-access). When
-  /// not present or `false`, the user is presumed to be a non-guest
-  /// user.
+  /// When `true`, the user is a [Guest User](https://spec.matrix.org/unstable/client-server-api/#guest-access).
+  /// When not present or `false`, the user is presumed to be a
+  /// non-guest user.
   bool? isGuest;
 
   /// The user ID that owns the access token.
@@ -1320,8 +1343,10 @@ class WhoIsInfo {
 
   WhoIsInfo.fromJson(Map<String, Object?> json)
       : devices = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) =>
-                MapEntry(k, DeviceInfo.fromJson(v as Map<String, Object?>)))
+            ? (v as Map<String, Object?>).map(
+                (k, v) =>
+                    MapEntry(k, DeviceInfo.fromJson(v as Map<String, Object?>)),
+              )
             : null)(json['devices']),
         userId = ((v) => v != null ? v as String : null)(json['user_id']);
   Map<String, Object?> toJson() {
@@ -1381,12 +1406,12 @@ class BooleanCapability {
 
 /// The stability of the room version.
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum RoomVersionAvailable {
-  @EnhancedEnumValue(name: 'stable')
-  stable,
-  @EnhancedEnumValue(name: 'unstable')
-  unstable
+  stable('stable'),
+  unstable('unstable');
+
+  final String name;
+  const RoomVersionAvailable(this.name);
 }
 
 ///
@@ -1398,8 +1423,10 @@ class RoomVersionsCapability {
   });
 
   RoomVersionsCapability.fromJson(Map<String, Object?> json)
-      : available = (json['available'] as Map<String, Object?>).map((k, v) =>
-            MapEntry(k, RoomVersionAvailable.values.fromString(v as String)!)),
+      : available = (json['available'] as Map<String, Object?>).map(
+          (k, v) =>
+              MapEntry(k, RoomVersionAvailable.values.fromString(v as String)!),
+        ),
         default$ = json['default'] as String;
   Map<String, Object?> toJson() => {
         'available': available.map((k, v) => MapEntry(k, v.name)),
@@ -1456,16 +1483,20 @@ class Capabilities {
         mSetDisplayname = ((v) => v != null
             ? BooleanCapability.fromJson(v as Map<String, Object?>)
             : null)(json['m.set_displayname']),
-        additionalProperties = Map.fromEntries(json.entries
-            .where((e) => ![
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where(
+                (e) => ![
                   'm.3pid_changes',
                   'm.change_password',
                   'm.get_login_token',
                   'm.room_versions',
                   'm.set_avatar_url',
-                  'm.set_displayname'
-                ].contains(e.key))
-            .map((e) => MapEntry(e.key, e.value)));
+                  'm.set_displayname',
+                ].contains(e.key),
+              )
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final m3pidChanges = this.m3pidChanges;
     final mChangePassword = this.mChangePassword;
@@ -1519,8 +1550,14 @@ class Capabilities {
           other.mSetDisplayname == mSetDisplayname);
 
   @dart.override
-  int get hashCode => Object.hash(m3pidChanges, mChangePassword, mGetLoginToken,
-      mRoomVersions, mSetAvatarUrl, mSetDisplayname);
+  int get hashCode => Object.hash(
+        m3pidChanges,
+        mChangePassword,
+        mGetLoginToken,
+        mRoomVersions,
+        mSetAvatarUrl,
+        mSetDisplayname,
+      );
 }
 
 ///
@@ -1620,24 +1657,23 @@ class Invite3pid {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum CreateRoomPreset {
-  @EnhancedEnumValue(name: 'private_chat')
-  privateChat,
-  @EnhancedEnumValue(name: 'public_chat')
-  publicChat,
-  @EnhancedEnumValue(name: 'trusted_private_chat')
-  trustedPrivateChat
+  privateChat('private_chat'),
+  publicChat('public_chat'),
+  trustedPrivateChat('trusted_private_chat');
+
+  final String name;
+  const CreateRoomPreset(this.name);
 }
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum Visibility {
-  @EnhancedEnumValue(name: 'private')
-  private,
-  @EnhancedEnumValue(name: 'public')
-  public
+  private('private'),
+  public('public');
+
+  final String name;
+  const Visibility(this.name);
 }
 
 /// A client device
@@ -1858,11 +1894,12 @@ class ThirdPartySigned {
   ThirdPartySigned.fromJson(Map<String, Object?> json)
       : mxid = json['mxid'] as String,
         sender = json['sender'] as String,
-        signatures = (json['signatures'] as Map<String, Object?>).map((k, v) =>
-            MapEntry(
-                k,
-                (v as Map<String, Object?>)
-                    .map((k, v) => MapEntry(k, v as String)))),
+        signatures = (json['signatures'] as Map<String, Object?>).map(
+          (k, v) => MapEntry(
+            k,
+            (v as Map<String, Object?>).map((k, v) => MapEntry(k, v as String)),
+          ),
+        ),
         token = json['token'] as String;
   Map<String, Object?> toJson() => {
         'mxid': mxid,
@@ -1957,10 +1994,12 @@ class ClaimKeysResponse {
                 .map((k, v) => MapEntry(k, v as Map<String, Object?>))
             : null)(json['failures']),
         oneTimeKeys = (json['one_time_keys'] as Map<String, Object?>).map(
-            (k, v) => MapEntry(
-                k,
-                (v as Map<String, Object?>)
-                    .map((k, v) => MapEntry(k, v as Map<String, Object?>))));
+          (k, v) => MapEntry(
+            k,
+            (v as Map<String, Object?>)
+                .map((k, v) => MapEntry(k, v as Map<String, Object?>)),
+          ),
+        );
   Map<String, Object?> toJson() {
     final failures = this.failures;
     return {
@@ -2014,26 +2053,45 @@ class QueryKeysResponse {
 
   QueryKeysResponse.fromJson(Map<String, Object?> json)
       : deviceKeys = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k,
-                (v as Map<String, Object?>).map((k, v) => MapEntry(
-                    k, MatrixDeviceKeys.fromJson(v as Map<String, Object?>)))))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  (v as Map<String, Object?>).map(
+                    (k, v) => MapEntry(
+                      k,
+                      MatrixDeviceKeys.fromJson(v as Map<String, Object?>),
+                    ),
+                  ),
+                ),
+              )
             : null)(json['device_keys']),
         failures = ((v) => v != null
             ? (v as Map<String, Object?>)
                 .map((k, v) => MapEntry(k, v as Map<String, Object?>))
             : null)(json['failures']),
         masterKeys = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k, MatrixCrossSigningKey.fromJson(v as Map<String, Object?>)))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  MatrixCrossSigningKey.fromJson(v as Map<String, Object?>),
+                ),
+              )
             : null)(json['master_keys']),
         selfSigningKeys = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k, MatrixCrossSigningKey.fromJson(v as Map<String, Object?>)))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  MatrixCrossSigningKey.fromJson(v as Map<String, Object?>),
+                ),
+              )
             : null)(json['self_signing_keys']),
         userSigningKeys = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k, MatrixCrossSigningKey.fromJson(v as Map<String, Object?>)))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  MatrixCrossSigningKey.fromJson(v as Map<String, Object?>),
+                ),
+              )
             : null)(json['user_signing_keys']);
   Map<String, Object?> toJson() {
     final deviceKeys = this.deviceKeys;
@@ -2044,7 +2102,8 @@ class QueryKeysResponse {
     return {
       if (deviceKeys != null)
         'device_keys': deviceKeys.map(
-            (k, v) => MapEntry(k, v.map((k, v) => MapEntry(k, v.toJson())))),
+          (k, v) => MapEntry(k, v.map((k, v) => MapEntry(k, v.toJson()))),
+        ),
       if (failures != null) 'failures': failures.map((k, v) => MapEntry(k, v)),
       if (masterKeys != null)
         'master_keys': masterKeys.map((k, v) => MapEntry(k, v.toJson())),
@@ -2107,7 +2166,12 @@ class QueryKeysResponse {
 
   @dart.override
   int get hashCode => Object.hash(
-      deviceKeys, failures, masterKeys, selfSigningKeys, userSigningKeys);
+        deviceKeys,
+        failures,
+        masterKeys,
+        selfSigningKeys,
+        userSigningKeys,
+      );
 }
 
 ///
@@ -2116,15 +2180,22 @@ class LoginFlow {
   LoginFlow({
     this.getLoginToken,
     required this.type,
+    this.additionalProperties = const {},
   });
 
   LoginFlow.fromJson(Map<String, Object?> json)
       : getLoginToken =
             ((v) => v != null ? v as bool : null)(json['get_login_token']),
-        type = json['type'] as String;
+        type = json['type'] as String,
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where((e) => !['get_login_token', 'type'].contains(e.key))
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final getLoginToken = this.getLoginToken;
     return {
+      ...additionalProperties,
       if (getLoginToken != null) 'get_login_token': getLoginToken,
       'type': type,
     };
@@ -2141,6 +2212,8 @@ class LoginFlow {
   /// The login type. This is supplied as the `type` when
   /// logging in.
   String type;
+
+  Map<String, Object?> additionalProperties;
 
   @dart.override
   bool operator ==(Object other) =>
@@ -2248,8 +2321,15 @@ class LoginResponse {
           other.wellKnown == wellKnown);
 
   @dart.override
-  int get hashCode => Object.hash(accessToken, deviceId, expiresInMs,
-      homeServer, refreshToken, userId, wellKnown);
+  int get hashCode => Object.hash(
+        accessToken,
+        deviceId,
+        expiresInMs,
+        homeServer,
+        refreshToken,
+        userId,
+        wellKnown,
+      );
 }
 
 ///
@@ -2364,14 +2444,13 @@ class GetNotificationsResponse {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum PresenceType {
-  @EnhancedEnumValue(name: 'offline')
-  offline,
-  @EnhancedEnumValue(name: 'online')
-  online,
-  @EnhancedEnumValue(name: 'unavailable')
-  unavailable
+  offline('offline'),
+  online('online'),
+  unavailable('unavailable');
+
+  final String name;
+  const PresenceType(this.name);
 }
 
 ///
@@ -2656,9 +2735,11 @@ class PusherData {
   PusherData.fromJson(Map<String, Object?> json)
       : format = ((v) => v != null ? v as String : null)(json['format']),
         url = ((v) => v != null ? Uri.parse(v as String) : null)(json['url']),
-        additionalProperties = Map.fromEntries(json.entries
-            .where((e) => !['format', 'url'].contains(e.key))
-            .map((e) => MapEntry(e.key, e.value)));
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where((e) => !['format', 'url'].contains(e.key))
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final format = this.format;
     final url = this.url;
@@ -2817,8 +2898,16 @@ class Pusher implements PusherId {
           other.profileTag == profileTag);
 
   @dart.override
-  int get hashCode => Object.hash(appId, pushkey, appDisplayName, data,
-      deviceDisplayName, kind, lang, profileTag);
+  int get hashCode => Object.hash(
+        appId,
+        pushkey,
+        appDisplayName,
+        data,
+        deviceDisplayName,
+        kind,
+        lang,
+        profileTag,
+      );
 }
 
 ///
@@ -3140,18 +3229,15 @@ class GetPushRulesGlobalResponse {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum PushRuleKind {
-  @EnhancedEnumValue(name: 'content')
-  content,
-  @EnhancedEnumValue(name: 'override')
-  override,
-  @EnhancedEnumValue(name: 'room')
-  room,
-  @EnhancedEnumValue(name: 'sender')
-  sender,
-  @EnhancedEnumValue(name: 'underride')
-  underride
+  content('content'),
+  override('override'),
+  room('room'),
+  sender('sender'),
+  underride('underride');
+
+  final String name;
+  const PushRuleKind(this.name);
 }
 
 ///
@@ -3207,12 +3293,12 @@ class RefreshResponse {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum AccountKind {
-  @EnhancedEnumValue(name: 'guest')
-  guest,
-  @EnhancedEnumValue(name: 'user')
-  user
+  guest('guest'),
+  user('user');
+
+  final String name;
+  const AccountKind(this.name);
 }
 
 ///
@@ -3309,7 +3395,13 @@ class RegisterResponse {
 
   @dart.override
   int get hashCode => Object.hash(
-      accessToken, deviceId, expiresInMs, homeServer, refreshToken, userId);
+        accessToken,
+        deviceId,
+        expiresInMs,
+        homeServer,
+        refreshToken,
+        userId,
+      );
 }
 
 ///
@@ -3332,7 +3424,9 @@ class RoomKeysUpdateResponse {
   int count;
 
   /// The new etag value representing stored keys in the backup.
-  /// See `GET /room_keys/version/{version}` for more details.
+  ///
+  /// See [`GET /room_keys/version/{version}`](client-server-api/#get_matrixclientv3room_keysversionversion)
+  /// for more details.
   String etag;
 
   @dart.override
@@ -3407,8 +3501,10 @@ class RoomKeyBackup {
   });
 
   RoomKeyBackup.fromJson(Map<String, Object?> json)
-      : sessions = (json['sessions'] as Map<String, Object?>).map((k, v) =>
-            MapEntry(k, KeyBackupData.fromJson(v as Map<String, Object?>)));
+      : sessions = (json['sessions'] as Map<String, Object?>).map(
+          (k, v) =>
+              MapEntry(k, KeyBackupData.fromJson(v as Map<String, Object?>)),
+        );
   Map<String, Object?> toJson() => {
         'sessions': sessions.map((k, v) => MapEntry(k, v.toJson())),
       };
@@ -3435,8 +3531,10 @@ class RoomKeys {
   });
 
   RoomKeys.fromJson(Map<String, Object?> json)
-      : rooms = (json['rooms'] as Map<String, Object?>).map((k, v) =>
-            MapEntry(k, RoomKeyBackup.fromJson(v as Map<String, Object?>)));
+      : rooms = (json['rooms'] as Map<String, Object?>).map(
+          (k, v) =>
+              MapEntry(k, RoomKeyBackup.fromJson(v as Map<String, Object?>)),
+        );
   Map<String, Object?> toJson() => {
         'rooms': rooms.map((k, v) => MapEntry(k, v.toJson())),
       };
@@ -3457,10 +3555,11 @@ class RoomKeys {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum BackupAlgorithm {
-  @EnhancedEnumValue(name: 'm.megolm_backup.v1.curve25519-aes-sha2')
-  mMegolmBackupV1Curve25519AesSha2
+  mMegolmBackupV1Curve25519AesSha2('m.megolm_backup.v1.curve25519-aes-sha2');
+
+  final String name;
+  const BackupAlgorithm(this.name);
 }
 
 ///
@@ -3716,18 +3815,15 @@ class RoomMember {
 
 ///
 @_NameSource('(generated, rule override generated)')
-@EnhancedEnum()
 enum Membership {
-  @EnhancedEnumValue(name: 'ban')
-  ban,
-  @EnhancedEnumValue(name: 'invite')
-  invite,
-  @EnhancedEnumValue(name: 'join')
-  join,
-  @EnhancedEnumValue(name: 'knock')
-  knock,
-  @EnhancedEnumValue(name: 'leave')
-  leave
+  ban('ban'),
+  invite('invite'),
+  join('join'),
+  knock('knock'),
+  leave('leave');
+
+  final String name;
+  const Membership(this.name);
 }
 
 /// A list of messages with a new token to request more.
@@ -3811,14 +3907,13 @@ class GetRoomEventsResponse {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum ReceiptType {
-  @EnhancedEnumValue(name: 'm.fully_read')
-  mFullyRead,
-  @EnhancedEnumValue(name: 'm.read')
-  mRead,
-  @EnhancedEnumValue(name: 'm.read.private')
-  mReadPrivate
+  mFullyRead('m.fully_read'),
+  mRead('m.read'),
+  mReadPrivate('m.read.private');
+
+  final String name;
+  const ReceiptType(this.name);
 }
 
 ///
@@ -4032,8 +4127,14 @@ class RoomEventFilter {
           other.unreadThreadNotifications == unreadThreadNotifications);
 
   @dart.override
-  int get hashCode => Object.hash(containsUrl, includeRedundantMembers,
-      lazyLoadMembers, notRooms, rooms, unreadThreadNotifications);
+  int get hashCode => Object.hash(
+        containsUrl,
+        includeRedundantMembers,
+        lazyLoadMembers,
+        notRooms,
+        rooms,
+        unreadThreadNotifications,
+      );
 }
 
 ///
@@ -4185,27 +4286,28 @@ class SearchFilter implements EventFilter, RoomEventFilter {
 
   @dart.override
   int get hashCode => Object.hash(
-      limit,
-      notSenders,
-      notTypes,
-      senders,
-      types,
-      containsUrl,
-      includeRedundantMembers,
-      lazyLoadMembers,
-      notRooms,
-      rooms,
-      unreadThreadNotifications);
+        limit,
+        notSenders,
+        notTypes,
+        senders,
+        types,
+        containsUrl,
+        includeRedundantMembers,
+        lazyLoadMembers,
+        notRooms,
+        rooms,
+        unreadThreadNotifications,
+      );
 }
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum GroupKey {
-  @EnhancedEnumValue(name: 'room_id')
-  roomId,
-  @EnhancedEnumValue(name: 'sender')
-  sender
+  roomId('room_id'),
+  sender('sender');
+
+  final String name;
+  const GroupKey(this.name);
 }
 
 /// Configuration for group.
@@ -4274,24 +4376,23 @@ class Groupings {
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum KeyKind {
-  @EnhancedEnumValue(name: 'content.body')
-  contentBody,
-  @EnhancedEnumValue(name: 'content.name')
-  contentName,
-  @EnhancedEnumValue(name: 'content.topic')
-  contentTopic
+  contentBody('content.body'),
+  contentName('content.name'),
+  contentTopic('content.topic');
+
+  final String name;
+  const KeyKind(this.name);
 }
 
 ///
 @_NameSource('rule override generated')
-@EnhancedEnum()
 enum SearchOrder {
-  @EnhancedEnumValue(name: 'rank')
-  rank,
-  @EnhancedEnumValue(name: 'recent')
-  recent
+  rank('rank'),
+  recent('recent');
+
+  final String name;
+  const SearchOrder(this.name);
 }
 
 ///
@@ -4386,7 +4487,14 @@ class RoomEventsCriteria {
 
   @dart.override
   int get hashCode => Object.hash(
-      eventContext, filter, groupings, includeState, keys, orderBy, searchTerm);
+        eventContext,
+        filter,
+        groupings,
+        includeState,
+        keys,
+        orderBy,
+        searchTerm,
+      );
 }
 
 ///
@@ -4538,8 +4646,12 @@ class SearchResultsEventContext {
                 .toList()
             : null)(json['events_before']),
         profileInfo = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) =>
-                MapEntry(k, UserProfile.fromJson(v as Map<String, Object?>)))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  UserProfile.fromJson(v as Map<String, Object?>),
+                ),
+              )
             : null)(json['profile_info']),
         start = ((v) => v != null ? v as String : null)(json['start']);
   Map<String, Object?> toJson() {
@@ -4660,10 +4772,17 @@ class ResultRoomEvents {
   ResultRoomEvents.fromJson(Map<String, Object?> json)
       : count = ((v) => v != null ? v as int : null)(json['count']),
         groups = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k,
-                (v as Map<String, Object?>).map((k, v) => MapEntry(
-                    k, GroupValue.fromJson(v as Map<String, Object?>)))))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  (v as Map<String, Object?>).map(
+                    (k, v) => MapEntry(
+                      k,
+                      GroupValue.fromJson(v as Map<String, Object?>),
+                    ),
+                  ),
+                ),
+              )
             : null)(json['groups']),
         highlights = ((v) => v != null
             ? (v as List).map((v) => v as String).toList()
@@ -4675,11 +4794,16 @@ class ResultRoomEvents {
                 .toList()
             : null)(json['results']),
         state = ((v) => v != null
-            ? (v as Map<String, Object?>).map((k, v) => MapEntry(
-                k,
-                (v as List)
-                    .map((v) => MatrixEvent.fromJson(v as Map<String, Object?>))
-                    .toList()))
+            ? (v as Map<String, Object?>).map(
+                (k, v) => MapEntry(
+                  k,
+                  (v as List)
+                      .map(
+                        (v) => MatrixEvent.fromJson(v as Map<String, Object?>),
+                      )
+                      .toList(),
+                ),
+              )
             : null)(json['state']);
   Map<String, Object?> toJson() {
     final count = this.count;
@@ -4692,7 +4816,8 @@ class ResultRoomEvents {
       if (count != null) 'count': count,
       if (groups != null)
         'groups': groups.map(
-            (k, v) => MapEntry(k, v.map((k, v) => MapEntry(k, v.toJson())))),
+          (k, v) => MapEntry(k, v.map((k, v) => MapEntry(k, v.toJson()))),
+        ),
       if (highlights != null) 'highlights': highlights.map((v) => v).toList(),
       if (nextBatch != null) 'next_batch': nextBatch,
       if (results != null) 'results': results.map((v) => v.toJson()).toList(),
@@ -4790,7 +4915,8 @@ class SearchResults {
 
   SearchResults.fromJson(Map<String, Object?> json)
       : searchCategories = ResultCategories.fromJson(
-            json['search_categories'] as Map<String, Object?>);
+          json['search_categories'] as Map<String, Object?>,
+        );
   Map<String, Object?> toJson() => {
         'search_categories': searchCategories.toJson(),
       };
@@ -4888,6 +5014,68 @@ class FieldType {
 
 ///
 @_NameSource('spec')
+class Protocol {
+  Protocol({
+    required this.fieldTypes,
+    required this.icon,
+    required this.locationFields,
+    required this.userFields,
+  });
+
+  Protocol.fromJson(Map<String, Object?> json)
+      : fieldTypes = (json['field_types'] as Map<String, Object?>).map(
+          (k, v) => MapEntry(k, FieldType.fromJson(v as Map<String, Object?>)),
+        ),
+        icon = json['icon'] as String,
+        locationFields =
+            (json['location_fields'] as List).map((v) => v as String).toList(),
+        userFields =
+            (json['user_fields'] as List).map((v) => v as String).toList();
+  Map<String, Object?> toJson() => {
+        'field_types': fieldTypes.map((k, v) => MapEntry(k, v.toJson())),
+        'icon': icon,
+        'location_fields': locationFields.map((v) => v).toList(),
+        'user_fields': userFields.map((v) => v).toList(),
+      };
+
+  /// The type definitions for the fields defined in `user_fields` and
+  /// `location_fields`. Each entry in those arrays MUST have an entry here.
+  /// The `string` key for this object is the field name itself.
+  ///
+  /// May be an empty object if no fields are defined.
+  Map<String, FieldType> fieldTypes;
+
+  /// A content URI representing an icon for the third-party protocol.
+  String icon;
+
+  /// Fields which may be used to identify a third-party location. These should be
+  /// ordered to suggest the way that entities may be grouped, where higher
+  /// groupings are ordered first. For example, the name of a network should be
+  /// searched before the name of a channel.
+  List<String> locationFields;
+
+  /// Fields which may be used to identify a third-party user. These should be
+  /// ordered to suggest the way that entities may be grouped, where higher
+  /// groupings are ordered first. For example, the name of a network should be
+  /// searched before the nickname of a user.
+  List<String> userFields;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Protocol &&
+          other.runtimeType == runtimeType &&
+          other.fieldTypes == fieldTypes &&
+          other.icon == icon &&
+          other.locationFields == locationFields &&
+          other.userFields == userFields);
+
+  @dart.override
+  int get hashCode => Object.hash(fieldTypes, icon, locationFields, userFields);
+}
+
+///
+@_NameSource('spec')
 class ProtocolInstance {
   ProtocolInstance({
     required this.desc,
@@ -4939,76 +5127,378 @@ class ProtocolInstance {
 }
 
 ///
-@_NameSource('spec')
-class Protocol {
-  Protocol({
-    required this.fieldTypes,
-    required this.icon,
-    required this.instances,
-    required this.locationFields,
-    required this.userFields,
+@_NameSource('generated')
+class Instances$1 {
+  Instances$1({
+    this.instanceId,
   });
 
-  Protocol.fromJson(Map<String, Object?> json)
-      : fieldTypes = (json['field_types'] as Map<String, Object?>).map((k, v) =>
-            MapEntry(k, FieldType.fromJson(v as Map<String, Object?>))),
+  Instances$1.fromJson(Map<String, Object?> json)
+      : instanceId =
+            ((v) => v != null ? v as String : null)(json['instance_id']);
+  Map<String, Object?> toJson() {
+    final instanceId = this.instanceId;
+    return {
+      if (instanceId != null) 'instance_id': instanceId,
+    };
+  }
+
+  /// A unique identifier for this instance on the homeserver. This field is added
+  /// to the response of [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// by the homeserver.
+  ///
+  /// This is the identifier to use as the `third_party_instance_id` in a request to
+  /// [`POST /_matrix/client/v3/publicRooms`](https://spec.matrix.org/unstable/client-server-api/#post_matrixclientv3publicrooms).
+  String? instanceId;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Instances$1 &&
+          other.runtimeType == runtimeType &&
+          other.instanceId == instanceId);
+
+  @dart.override
+  int get hashCode => instanceId.hashCode;
+}
+
+///
+@_NameSource('generated')
+class Instances$2 implements ProtocolInstance, Instances$1 {
+  Instances$2({
+    required this.desc,
+    required this.fields,
+    this.icon,
+    required this.networkId,
+    this.instanceId,
+  });
+
+  Instances$2.fromJson(Map<String, Object?> json)
+      : desc = json['desc'] as String,
+        fields = json['fields'] as Map<String, Object?>,
+        icon = ((v) => v != null ? v as String : null)(json['icon']),
+        networkId = json['network_id'] as String,
+        instanceId =
+            ((v) => v != null ? v as String : null)(json['instance_id']);
+  @override
+  Map<String, Object?> toJson() {
+    final icon = this.icon;
+    final instanceId = this.instanceId;
+    return {
+      'desc': desc,
+      'fields': fields,
+      if (icon != null) 'icon': icon,
+      'network_id': networkId,
+      if (instanceId != null) 'instance_id': instanceId,
+    };
+  }
+
+  /// A human-readable description for the protocol, such as the name.
+  @override
+  String desc;
+
+  /// Preset values for `fields` the client may use to search by.
+  @override
+  Map<String, Object?> fields;
+
+  /// An optional content URI representing the protocol. Overrides the one provided
+  /// at the higher level Protocol object.
+  @override
+  String? icon;
+
+  /// A unique identifier across all instances.
+  @override
+  String networkId;
+
+  /// A unique identifier for this instance on the homeserver. This field is added
+  /// to the response of [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// by the homeserver.
+  ///
+  /// This is the identifier to use as the `third_party_instance_id` in a request to
+  /// [`POST /_matrix/client/v3/publicRooms`](https://spec.matrix.org/unstable/client-server-api/#post_matrixclientv3publicrooms).
+  @override
+  String? instanceId;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Instances$2 &&
+          other.runtimeType == runtimeType &&
+          other.desc == desc &&
+          other.fields == fields &&
+          other.icon == icon &&
+          other.networkId == networkId &&
+          other.instanceId == instanceId);
+
+  @dart.override
+  int get hashCode => Object.hash(desc, fields, icon, networkId, instanceId);
+}
+
+///
+@_NameSource('generated')
+class GetProtocolMetadataResponse$1 {
+  GetProtocolMetadataResponse$1({
+    this.instances,
+  });
+
+  GetProtocolMetadataResponse$1.fromJson(Map<String, Object?> json)
+      : instances = ((v) => v != null
+            ? (v as List)
+                .map((v) => Instances$2.fromJson(v as Map<String, Object?>))
+                .toList()
+            : null)(json['instances']);
+  Map<String, Object?> toJson() {
+    final instances = this.instances;
+    return {
+      if (instances != null)
+        'instances': instances.map((v) => v.toJson()).toList(),
+    };
+  }
+
+  /// A list of objects representing independent instances of configuration.
+  /// For example, multiple networks on IRC if multiple are provided by the
+  /// same application service.
+  ///
+  /// The instances are modified by the homeserver from the response of
+  /// [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// to include an `instance_id` to serve as a unique identifier for each
+  /// instance on the homeserver.
+  List<Instances$2>? instances;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is GetProtocolMetadataResponse$1 &&
+          other.runtimeType == runtimeType &&
+          other.instances == instances);
+
+  @dart.override
+  int get hashCode => instances.hashCode;
+}
+
+///
+@_NameSource('generated')
+class GetProtocolMetadataResponse$2
+    implements Protocol, GetProtocolMetadataResponse$1 {
+  GetProtocolMetadataResponse$2({
+    required this.fieldTypes,
+    required this.icon,
+    required this.locationFields,
+    required this.userFields,
+    this.instances,
+  });
+
+  GetProtocolMetadataResponse$2.fromJson(Map<String, Object?> json)
+      : fieldTypes = (json['field_types'] as Map<String, Object?>).map(
+          (k, v) => MapEntry(k, FieldType.fromJson(v as Map<String, Object?>)),
+        ),
         icon = json['icon'] as String,
-        instances = (json['instances'] as List)
-            .map((v) => ProtocolInstance.fromJson(v as Map<String, Object?>))
-            .toList(),
         locationFields =
             (json['location_fields'] as List).map((v) => v as String).toList(),
         userFields =
-            (json['user_fields'] as List).map((v) => v as String).toList();
-  Map<String, Object?> toJson() => {
-        'field_types': fieldTypes.map((k, v) => MapEntry(k, v.toJson())),
-        'icon': icon,
+            (json['user_fields'] as List).map((v) => v as String).toList(),
+        instances = ((v) => v != null
+            ? (v as List)
+                .map((v) => Instances$2.fromJson(v as Map<String, Object?>))
+                .toList()
+            : null)(json['instances']);
+  @override
+  Map<String, Object?> toJson() {
+    final instances = this.instances;
+    return {
+      'field_types': fieldTypes.map((k, v) => MapEntry(k, v.toJson())),
+      'icon': icon,
+      'location_fields': locationFields.map((v) => v).toList(),
+      'user_fields': userFields.map((v) => v).toList(),
+      if (instances != null)
         'instances': instances.map((v) => v.toJson()).toList(),
-        'location_fields': locationFields.map((v) => v).toList(),
-        'user_fields': userFields.map((v) => v).toList(),
-      };
+    };
+  }
 
   /// The type definitions for the fields defined in `user_fields` and
   /// `location_fields`. Each entry in those arrays MUST have an entry here.
   /// The `string` key for this object is the field name itself.
   ///
   /// May be an empty object if no fields are defined.
+  @override
   Map<String, FieldType> fieldTypes;
 
   /// A content URI representing an icon for the third-party protocol.
+  @override
   String icon;
-
-  /// A list of objects representing independent instances of configuration.
-  /// For example, multiple networks on IRC if multiple are provided by the
-  /// same application service.
-  List<ProtocolInstance> instances;
 
   /// Fields which may be used to identify a third-party location. These should be
   /// ordered to suggest the way that entities may be grouped, where higher
   /// groupings are ordered first. For example, the name of a network should be
   /// searched before the name of a channel.
+  @override
   List<String> locationFields;
 
   /// Fields which may be used to identify a third-party user. These should be
   /// ordered to suggest the way that entities may be grouped, where higher
   /// groupings are ordered first. For example, the name of a network should be
   /// searched before the nickname of a user.
+  @override
   List<String> userFields;
+
+  /// A list of objects representing independent instances of configuration.
+  /// For example, multiple networks on IRC if multiple are provided by the
+  /// same application service.
+  ///
+  /// The instances are modified by the homeserver from the response of
+  /// [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// to include an `instance_id` to serve as a unique identifier for each
+  /// instance on the homeserver.
+  @override
+  List<Instances$2>? instances;
 
   @dart.override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      (other is Protocol &&
+      (other is GetProtocolMetadataResponse$2 &&
           other.runtimeType == runtimeType &&
           other.fieldTypes == fieldTypes &&
           other.icon == icon &&
-          other.instances == instances &&
           other.locationFields == locationFields &&
-          other.userFields == userFields);
+          other.userFields == userFields &&
+          other.instances == instances);
 
   @dart.override
   int get hashCode =>
-      Object.hash(fieldTypes, icon, instances, locationFields, userFields);
+      Object.hash(fieldTypes, icon, locationFields, userFields, instances);
+}
+
+///
+@_NameSource('generated')
+class GetProtocolsResponse$1 {
+  GetProtocolsResponse$1({
+    this.instances,
+  });
+
+  GetProtocolsResponse$1.fromJson(Map<String, Object?> json)
+      : instances = ((v) => v != null
+            ? (v as List)
+                .map((v) => Instances$2.fromJson(v as Map<String, Object?>))
+                .toList()
+            : null)(json['instances']);
+  Map<String, Object?> toJson() {
+    final instances = this.instances;
+    return {
+      if (instances != null)
+        'instances': instances.map((v) => v.toJson()).toList(),
+    };
+  }
+
+  /// A list of objects representing independent instances of configuration.
+  /// For example, multiple networks on IRC if multiple are provided by the
+  /// same application service.
+  ///
+  /// The instances are modified by the homeserver from the response of
+  /// [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// to include an `instance_id` to serve as a unique identifier for each
+  /// instance on the homeserver.
+  List<Instances$2>? instances;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is GetProtocolsResponse$1 &&
+          other.runtimeType == runtimeType &&
+          other.instances == instances);
+
+  @dart.override
+  int get hashCode => instances.hashCode;
+}
+
+///
+@_NameSource('generated')
+class GetProtocolsResponse$2 implements Protocol, GetProtocolsResponse$1 {
+  GetProtocolsResponse$2({
+    required this.fieldTypes,
+    required this.icon,
+    required this.locationFields,
+    required this.userFields,
+    this.instances,
+  });
+
+  GetProtocolsResponse$2.fromJson(Map<String, Object?> json)
+      : fieldTypes = (json['field_types'] as Map<String, Object?>).map(
+          (k, v) => MapEntry(k, FieldType.fromJson(v as Map<String, Object?>)),
+        ),
+        icon = json['icon'] as String,
+        locationFields =
+            (json['location_fields'] as List).map((v) => v as String).toList(),
+        userFields =
+            (json['user_fields'] as List).map((v) => v as String).toList(),
+        instances = ((v) => v != null
+            ? (v as List)
+                .map((v) => Instances$2.fromJson(v as Map<String, Object?>))
+                .toList()
+            : null)(json['instances']);
+  @override
+  Map<String, Object?> toJson() {
+    final instances = this.instances;
+    return {
+      'field_types': fieldTypes.map((k, v) => MapEntry(k, v.toJson())),
+      'icon': icon,
+      'location_fields': locationFields.map((v) => v).toList(),
+      'user_fields': userFields.map((v) => v).toList(),
+      if (instances != null)
+        'instances': instances.map((v) => v.toJson()).toList(),
+    };
+  }
+
+  /// The type definitions for the fields defined in `user_fields` and
+  /// `location_fields`. Each entry in those arrays MUST have an entry here.
+  /// The `string` key for this object is the field name itself.
+  ///
+  /// May be an empty object if no fields are defined.
+  @override
+  Map<String, FieldType> fieldTypes;
+
+  /// A content URI representing an icon for the third-party protocol.
+  @override
+  String icon;
+
+  /// Fields which may be used to identify a third-party location. These should be
+  /// ordered to suggest the way that entities may be grouped, where higher
+  /// groupings are ordered first. For example, the name of a network should be
+  /// searched before the name of a channel.
+  @override
+  List<String> locationFields;
+
+  /// Fields which may be used to identify a third-party user. These should be
+  /// ordered to suggest the way that entities may be grouped, where higher
+  /// groupings are ordered first. For example, the name of a network should be
+  /// searched before the nickname of a user.
+  @override
+  List<String> userFields;
+
+  /// A list of objects representing independent instances of configuration.
+  /// For example, multiple networks on IRC if multiple are provided by the
+  /// same application service.
+  ///
+  /// The instances are modified by the homeserver from the response of
+  /// [`GET /_matrix/app/v1/thirdparty/protocol/{protocol}`](https://spec.matrix.org/unstable/application-service-api/#get_matrixappv1thirdpartyprotocolprotocol)
+  /// to include an `instance_id` to serve as a unique identifier for each
+  /// instance on the homeserver.
+  @override
+  List<Instances$2>? instances;
+
+  @dart.override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is GetProtocolsResponse$2 &&
+          other.runtimeType == runtimeType &&
+          other.fieldTypes == fieldTypes &&
+          other.icon == icon &&
+          other.locationFields == locationFields &&
+          other.userFields == userFields &&
+          other.instances == instances);
+
+  @dart.override
+  int get hashCode =>
+      Object.hash(fieldTypes, icon, locationFields, userFields, instances);
 }
 
 ///
@@ -5054,12 +5544,12 @@ class ThirdPartyUser {
 
 ///
 @_NameSource('generated')
-@EnhancedEnum()
 enum EventFormat {
-  @EnhancedEnumValue(name: 'client')
-  client,
-  @EnhancedEnumValue(name: 'federation')
-  federation
+  client('client'),
+  federation('federation');
+
+  final String name;
+  const EventFormat(this.name);
 }
 
 ///
@@ -5211,17 +5701,18 @@ class StateFilter implements EventFilter, RoomEventFilter {
 
   @dart.override
   int get hashCode => Object.hash(
-      limit,
-      notSenders,
-      notTypes,
-      senders,
-      types,
-      containsUrl,
-      includeRedundantMembers,
-      lazyLoadMembers,
-      notRooms,
-      rooms,
-      unreadThreadNotifications);
+        limit,
+        notSenders,
+        notTypes,
+        senders,
+        types,
+        containsUrl,
+        includeRedundantMembers,
+        lazyLoadMembers,
+        notRooms,
+        rooms,
+        unreadThreadNotifications,
+      );
 }
 
 ///
@@ -5313,7 +5804,14 @@ class RoomFilter {
 
   @dart.override
   int get hashCode => Object.hash(
-      accountData, ephemeral, includeLeave, notRooms, rooms, state, timeline);
+        accountData,
+        ephemeral,
+        includeLeave,
+        notRooms,
+        rooms,
+        state,
+        timeline,
+      );
 }
 
 ///
@@ -5454,9 +5952,11 @@ class Tag {
   Tag.fromJson(Map<String, Object?> json)
       : order =
             ((v) => v != null ? (v as num).toDouble() : null)(json['order']),
-        additionalProperties = Map.fromEntries(json.entries
-            .where((e) => !['order'].contains(e.key))
-            .map((e) => MapEntry(e.key, e.value)));
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where((e) => !['order'].contains(e.key))
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final order = this.order;
     return {

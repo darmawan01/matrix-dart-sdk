@@ -131,12 +131,16 @@ abstract class MatrixLocalizations {
   String changedTheGuestAccessRules(String senderName);
 
   String changedTheGuestAccessRulesTo(
-      String senderName, String localizedString);
+    String senderName,
+    String localizedString,
+  );
 
   String changedTheHistoryVisibility(String senderName);
 
   String changedTheHistoryVisibilityTo(
-      String senderName, String localizedString);
+    String senderName,
+    String localizedString,
+  );
 
   String activatedEndToEndEncryption(String senderName);
 
@@ -145,6 +149,8 @@ abstract class MatrixLocalizations {
   String sentAFile(String senderName);
 
   String sentAnAudio(String senderName);
+
+  String voiceMessage(String senderName, Duration? duration);
 
   String sentAVideo(String senderName);
 

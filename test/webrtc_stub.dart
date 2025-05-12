@@ -16,6 +16,11 @@ class MockWebRTCDelegate implements WebRTCDelegate {
       MockRTCPeerConnection();
 
   @override
+  Future<void> registerListeners(CallSession session) async {
+    Logs().i('registerListeners called in MockWebRTCDelegate');
+  }
+
+  @override
   Future<void> handleCallEnded(CallSession session) async {
     Logs().i('handleCallEnded called in MockWebRTCDelegate');
   }
@@ -683,6 +688,11 @@ class MockRTCDataChannel implements RTCDataChannel {
   Future<void> close() async {
     // Mock implementation for closing the data channel
     Logs().i('Mock: Closing RTCDataChannel');
+  }
+
+  @override
+  Future<int> getBufferedAmount() async {
+    return 0;
   }
 }
 

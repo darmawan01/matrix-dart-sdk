@@ -78,8 +78,8 @@ void main() {
       room = Room(
         id: roomID,
         client: client,
-        prev_batch: '1234',
         roomAccountData: {},
+        prev_batch: 'room_preset_1234',
       );
       timeline = Timeline(
         room: room,
@@ -115,11 +115,9 @@ void main() {
     );
 
     test('Create', () async {
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -127,13 +125,12 @@ void main() {
             'event_id': '2',
             'origin_server_ts': testTimeStamp - 1000,
           },
+          room,
         ),
       );
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -141,10 +138,12 @@ void main() {
             'event_id': '\$1',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
 
-      expect(timeline.sub != null, true);
+      expect(timeline.timelineSub != null, true);
+      expect(timeline.historySub != null, true);
 
       await waitForCount(2);
 
@@ -178,7 +177,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       timeline.events.first.eventId: {
@@ -202,11 +201,9 @@ void main() {
       expect(timeline.events[0].receipts.length, 1);
       expect(timeline.events[0].receipts[0].user.id, '@alice:example.com');
 
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.redaction',
             'content': {'reason': 'spamming'},
             'sender': '@alice:example.com',
@@ -214,6 +211,7 @@ void main() {
             'event_id': '3',
             'origin_server_ts': testTimeStamp + 1000,
           },
+          room,
         ),
       );
 
@@ -269,7 +267,8 @@ void main() {
         ),
       );
 
-      expect(timeline.sub != null, true);
+      expect(timeline.timelineSub != null, true);
+      expect(timeline.historySub != null, true);
 
       await waitForCount(3);
 
@@ -295,7 +294,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -329,7 +328,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -372,7 +371,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -422,7 +421,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$1': {
@@ -468,7 +467,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -512,7 +511,7 @@ void main() {
             join: {
               timeline.room.id: JoinedRoomUpdate(
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -560,7 +559,7 @@ void main() {
                   ],
                 ),
                 ephemeral: [
-                  BasicRoomEvent.fromJson({
+                  BasicEvent.fromJson({
                     'type': 'm.receipt',
                     'content': {
                       '\$2': {
@@ -584,7 +583,8 @@ void main() {
         ),
       );
 
-      expect(timeline.sub != null, true);
+      expect(timeline.timelineSub != null, true);
+      expect(timeline.historySub != null, true);
 
       await waitForCount(1);
 
@@ -604,11 +604,9 @@ void main() {
       expect(eventId.startsWith('\$event'), true);
       expect(timeline.events[0].status, EventStatus.sent);
 
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'test'},
             'sender': '@alice:example.com',
@@ -617,6 +615,7 @@ void main() {
             'unsigned': {'transaction_id': '1234'},
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
 
@@ -629,11 +628,9 @@ void main() {
     });
 
     test('Send message with error', () async {
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {
               'msgtype': 'm.text',
@@ -644,6 +641,7 @@ void main() {
             'event_id': 'abc',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
       await waitForCount(1);
@@ -668,11 +666,9 @@ void main() {
 
     test('Remove message', () async {
       // send a failed message
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -680,6 +676,7 @@ void main() {
             'event_id': 'abc',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
       await waitForCount(1);
@@ -695,11 +692,9 @@ void main() {
     });
 
     test('getEventById', () async {
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -707,6 +702,7 @@ void main() {
             'event_id': 'abc',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
       await waitForCount(1);
@@ -726,11 +722,9 @@ void main() {
 
     test('Resend message', () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -739,6 +733,7 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'newresend'},
           },
+          room,
         ),
       );
       await waitForCount(1);
@@ -799,11 +794,9 @@ void main() {
 
     test('sort errors on top', () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -811,13 +804,12 @@ void main() {
             'event_id': 'abc',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -825,6 +817,7 @@ void main() {
             'event_id': 'def',
             'origin_server_ts': testTimeStamp + 5,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -834,11 +827,9 @@ void main() {
 
     test('sending event to failed update', () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -846,16 +837,15 @@ void main() {
             'event_id': 'will-fail',
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sending);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -863,6 +853,7 @@ void main() {
             'event_id': 'will-fail',
             'origin_server_ts': testTimeStamp,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -870,11 +861,9 @@ void main() {
       expect(timeline.events.length, 1);
     });
     test('setReadMarker', () async {
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -882,6 +871,7 @@ void main() {
             'event_id': 'will-work',
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -892,11 +882,9 @@ void main() {
     test('sending an event and the http request finishes first, 0 -> 1 -> 2',
         () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -904,16 +892,15 @@ void main() {
             'event_id': 'transaction',
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sending);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -922,16 +909,15 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sent);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -940,6 +926,7 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -949,11 +936,9 @@ void main() {
     test('sending an event where the sync reply arrives first, 0 -> 2 -> 1',
         () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -964,16 +949,15 @@ void main() {
               'transaction_id': 'transaction',
             },
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sending);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -984,16 +968,15 @@ void main() {
               messageSendingStatusKey: EventStatus.synced.intValue,
             },
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.synced);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1004,6 +987,7 @@ void main() {
               messageSendingStatusKey: EventStatus.sent.intValue,
             },
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -1012,11 +996,9 @@ void main() {
     });
     test('sending an event 0 -> -1 -> 2', () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1024,16 +1006,15 @@ void main() {
             'event_id': 'transaction',
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sending);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1041,16 +1022,15 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.error);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1059,6 +1039,7 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
@@ -1067,11 +1048,9 @@ void main() {
     });
     test('sending an event 0 -> 2 -> -1', () async {
       timeline.events.clear();
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1079,16 +1058,15 @@ void main() {
             'event_id': 'transaction',
             'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.sending);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1097,16 +1075,15 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.synced);
       expect(timeline.events.length, 1);
-      client.onEvent.add(
-        EventUpdate(
-          type: EventUpdateType.timeline,
-          roomID: roomID,
-          content: {
+      client.onTimelineEvent.add(
+        Event.fromJson(
+          {
             'type': 'm.room.message',
             'content': {'msgtype': 'm.text', 'body': 'Testcase'},
             'sender': '@alice:example.com',
@@ -1114,11 +1091,371 @@ void main() {
             'origin_server_ts': testTimeStamp,
             'unsigned': {'transaction_id': 'transaction'},
           },
+          room,
         ),
       );
       await Future.delayed(Duration(milliseconds: 50));
       expect(timeline.events[0].status, EventStatus.synced);
       expect(timeline.events.length, 1);
+    });
+
+    test('make sure aggregated events are updated on requestHistory', () async {
+      timeline.events.clear();
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something',
+          rooms: RoomsUpdate(
+            join: {
+              timeline.room.id: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '11',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '22',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {
+                        'msgtype': 'm.text',
+                        'body': '* edit 11',
+                        'm.new_content': {
+                          'msgtype': 'm.text',
+                          'body': 'edit 11',
+                          'm.mentions': {},
+                        },
+                        'm.mentions': {},
+                        'm.relates_to': {
+                          'rel_type': 'm.replace',
+                          'event_id': '11',
+                        },
+                      },
+                      'event_id': '33',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {
+                        'msgtype': 'm.text',
+                        'body': '* edit 22',
+                        'm.new_content': {
+                          'msgtype': 'm.text',
+                          'body': 'edit 22',
+                          'm.mentions': {},
+                        },
+                        'm.mentions': {},
+                        'm.relates_to': {
+                          'rel_type': 'm.replace',
+                          'event_id': '22',
+                        },
+                      },
+                      'event_id': '44',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+
+      final t = await room.getTimeline(limit: 1);
+
+      expect(t.events.length, 1);
+
+      expect(
+        t.events.single.getDisplayEvent(t).body,
+        '* edit 22',
+      );
+
+      await t.requestHistory();
+
+      expect(
+        t.events.reversed
+            .where(
+              (element) => element.relationshipType != RelationshipTypes.edit,
+            )
+            .last
+            .getDisplayEvent(t)
+            .body,
+        'edit 22',
+      );
+      expect(
+        t.events.reversed
+            .where(
+              (element) => element.relationshipType != RelationshipTypes.edit,
+            )
+            .first
+            .getDisplayEvent(t)
+            .body,
+        'edit 11',
+      );
+    });
+
+    test('make sure timeline with null prev_batch is not reset incorrectly',
+        () async {
+      timeline.events.clear();
+      timeline.room.prev_batch = null;
+
+      Timeline t = await room.getTimeline();
+      expect(t.events.length, 0);
+      expect(t.room.prev_batch, null);
+
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something',
+          rooms: RoomsUpdate(
+            join: {
+              timeline.room.id: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  prevBatch: 'room_preset_1234',
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase 3'},
+                      'event_id': '33',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase 4'},
+                      'event_id': '44',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+
+      t = await room.getTimeline();
+      expect(t.events.length, 2);
+      expect(
+        t.room.prev_batch,
+        null,
+        reason:
+            'The prev_batch is null, which means that no earlier events are available. Having a new prev_batch is sync shouldn\'t reset it.',
+      );
+    });
+
+    test('make sure room prev_batch is set correctly when invited', () async {
+      final newRoomId1 = '!newroom:example.com';
+      final newRoomId2 = '!newroom2:example.com';
+
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something',
+          rooms: RoomsUpdate(
+            invite: {
+              newRoomId1: InvitedRoomUpdate(
+                inviteState: [
+                  StrippedStateEvent(
+                    type: EventTypes.RoomMember,
+                    senderId: '@bob:example.com',
+                    stateKey: client.userID,
+                    content: {
+                      'membership': 'invite',
+                    },
+                  ),
+                ],
+              ),
+              newRoomId2: InvitedRoomUpdate(
+                inviteState: [
+                  StrippedStateEvent(
+                    type: EventTypes.RoomMember,
+                    senderId: '@bob:example.com',
+                    stateKey: client.userID,
+                    content: {
+                      'membership': 'invite',
+                    },
+                  ),
+                ],
+              ),
+            },
+          ),
+        ),
+      );
+
+      Room? newRoom1 = client.getRoomById(newRoomId1);
+      expect(newRoom1?.membership, Membership.invite);
+      expect(newRoom1?.prev_batch, null);
+
+      Room? newRoom2 = client.getRoomById(newRoomId2);
+      expect(newRoom2?.membership, Membership.invite);
+      expect(newRoom2?.prev_batch, null);
+
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something',
+          rooms: RoomsUpdate(
+            join: {
+              newRoomId1: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  prevBatch:
+                      null, // this means that no earlier events are available
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '33',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+              newRoomId2: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  prevBatch: 'actual_prev_batch',
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '33',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+
+      newRoom1 = client.getRoomById(newRoomId1);
+      expect(newRoom1?.membership, Membership.join);
+      expect(newRoom1?.prev_batch, null);
+
+      newRoom2 = client.getRoomById(newRoomId2);
+      expect(newRoom2?.membership, Membership.join);
+      expect(newRoom2?.prev_batch, 'actual_prev_batch');
+    });
+
+    test('make sure a limited timeline resets the prev_batch', () async {
+      timeline.events.clear();
+      expect(timeline.room.prev_batch, 'room_preset_1234');
+
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something',
+          rooms: RoomsUpdate(
+            join: {
+              timeline.room.id: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  prevBatch: 'room_preset_5678',
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '11',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {'msgtype': 'm.text', 'body': 'Testcase'},
+                      'event_id': '22',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+
+      Timeline t = await room.getTimeline();
+
+      expect(t.events.length, 2);
+      expect(
+        t.room.prev_batch,
+        'room_preset_1234',
+        reason:
+            'The prev_batch should only be set the first time and be updated when requesting history. It shouldn\'t be updated every sync incorrectly.',
+      );
+
+      await client.handleSync(
+        SyncUpdate(
+          nextBatch: 'something2',
+          rooms: RoomsUpdate(
+            join: {
+              timeline.room.id: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  prevBatch: 'room_preset_1234_after_limited',
+                  limited: true,
+                  events: [
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {
+                        'msgtype': 'm.text',
+                        'body': '* edit 11',
+                        'm.new_content': {
+                          'msgtype': 'm.text',
+                          'body': 'edit 11',
+                          'm.mentions': {},
+                        },
+                        'm.mentions': {},
+                        'm.relates_to': {
+                          'rel_type': 'm.replace',
+                          'event_id': '11',
+                        },
+                      },
+                      'event_id': '33',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                    MatrixEvent.fromJson({
+                      'type': 'm.room.message',
+                      'content': {
+                        'msgtype': 'm.text',
+                        'body': '* edit 22',
+                        'm.new_content': {
+                          'msgtype': 'm.text',
+                          'body': 'edit 22',
+                          'm.mentions': {},
+                        },
+                        'm.mentions': {},
+                        'm.relates_to': {
+                          'rel_type': 'm.replace',
+                          'event_id': '22',
+                        },
+                      },
+                      'event_id': '44',
+                      'sender': '@alice:example.com',
+                      'origin_server_ts': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  ],
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+
+      t = await room.getTimeline();
+      expect(t.events.length, 2);
+      expect(t.room.prev_batch, 'room_preset_1234_after_limited');
+      await t.requestHistory();
+      expect(t.room.prev_batch, 't47409-4357353_219380_26003_2265');
     });
     test('logout', () async {
       await client.logout();

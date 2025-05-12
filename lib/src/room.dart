@@ -67,12 +67,17 @@ class Room {
   Map<String, Map<String, StrippedStateEvent>> states = {};
 
   /// Key-Value store for ephemerals.
-  Map<String, BasicRoomEvent> ephemerals = {};
+  Map<String, BasicEvent> ephemerals = {};
 
   /// Key-Value store for private account data only visible for this user.
-  Map<String, BasicRoomEvent> roomAccountData = {};
+  Map<String, BasicEvent> roomAccountData = {};
 
-  final _sendingQueue = <Completer>[];
+  /// Queue of sending events
+  /// NOTE: This shouldn't be modified directly, use [sendEvent] instead. This is only used for testing.
+  final sendingQueue = <Completer>[];
+
+  /// List of transaction IDs of events that are currently queued to be sent
+  final sendingQueueEventsByTxId = <String>[];
 
   Timer? _clearTypingIndicatorTimer;
 
@@ -249,8 +254,10 @@ class Room {
     }
 
     final directChatMatrixID = this.directChatMatrixID;
-    final heroes = summary.mHeroes ??
-        (directChatMatrixID == null ? [] : [directChatMatrixID]);
+    final heroes = summary.mHeroes ?? [];
+    if (directChatMatrixID != null && heroes.isEmpty) {
+      heroes.add(directChatMatrixID);
+    }
     if (heroes.isNotEmpty) {
       final result = heroes
           .where(
@@ -372,7 +379,7 @@ class Room {
 
   Event? lastEvent;
 
-  void setEphemeral(BasicRoomEvent ephemeral) {
+  void setEphemeral(BasicEvent ephemeral) {
     ephemerals[ephemeral.type] = ephemeral;
     if (ephemeral.type == 'm.typing') {
       _clearTypingIndicatorTimer?.cancel();
@@ -403,10 +410,10 @@ class Room {
     this.highlightCount = 0,
     this.prev_batch,
     required this.client,
-    Map<String, BasicRoomEvent>? roomAccountData,
+    Map<String, BasicEvent>? roomAccountData,
     RoomSummary? summary,
     this.lastEvent,
-  })  : roomAccountData = roomAccountData ?? <String, BasicRoomEvent>{},
+  })  : roomAccountData = roomAccountData ?? <String, BasicEvent>{},
         summary = summary ??
             RoomSummary.fromJson({
               'm.joined_member_count': 0,
@@ -437,8 +444,9 @@ class Room {
   @Deprecated('Use `getLocalizedDisplayname()` instead')
   String get displayname => getLocalizedDisplayname();
 
-  /// When the last message received.
-  DateTime get timeCreated => lastEvent?.originServerTs ?? DateTime.now();
+  /// When was the last event received.
+  DateTime get latestEventReceivedTime =>
+      lastEvent?.originServerTs ?? DateTime.now();
 
   /// Call the Matrix API to change the name of this room. Returns the event ID of the
   /// new m.room.name event.
@@ -518,7 +526,9 @@ class Room {
     // There is no known event or the last event is only a state fallback event,
     // we assume there is no new messages.
     if (lastEvent == null ||
-        !client.roomPreviewLastEvents.contains(lastEvent.type)) return false;
+        !client.roomPreviewLastEvents.contains(lastEvent.type)) {
+      return false;
+    }
 
     // Read marker is on the last event so no new messages.
     if (lastEvent.receipts
@@ -561,6 +571,12 @@ class Room {
   /// this works if there is no connection to the homeserver. This does **not**
   /// set a read marker!
   Future<void> markUnread(bool unread) async {
+    if (unread == markedUnread) return;
+    if (membership != Membership.join) {
+      throw Exception(
+        'Can not markUnread on a room with membership $membership',
+      );
+    }
     final content = MarkedUnread(unread).toJson();
     await _handleFakeSync(
       SyncUpdate(
@@ -569,9 +585,8 @@ class Room {
           join: {
             id: JoinedRoomUpdate(
               accountData: [
-                BasicRoomEvent(
+                BasicEvent(
                   content: content,
-                  roomId: id,
                   type: EventType.markedUnread,
                 ),
               ],
@@ -621,6 +636,7 @@ class Room {
     String msgtype = MessageTypes.Text,
     String? threadRootEventId,
     String? threadLastEventId,
+    StringBuffer? commandStdout,
   }) {
     if (parseCommands) {
       return client.parseAndRunCommand(
@@ -631,6 +647,7 @@ class Room {
         txid: txid,
         threadRootEventId: threadRootEventId,
         threadLastEventId: threadLastEventId,
+        stdout: commandStdout,
       );
     }
     final event = <String, dynamic>{
@@ -642,6 +659,7 @@ class Room {
         event['body'],
         getEmotePacks: () => getImagePacksFlat(ImagePackUsage.emoticon),
         getMention: getMention,
+        convertLinebreaks: client.convertLinebreaksInFormatting,
       );
       // if the decoded html is the same as the body, there is no need in sending a formatted message
       if (HtmlUnescape().convert(html.replaceAll(RegExp(r'<br />\n?'), '\n')) !=
@@ -731,6 +749,8 @@ class Room {
                     'msgtype': file.msgType,
                     'body': file.name,
                     'filename': file.name,
+                    'info': file.info,
+                    if (extraContent != null) ...extraContent,
                   },
                   type: EventTypes.Message,
                   eventId: txid,
@@ -1091,11 +1111,14 @@ class Room {
         },
       ),
     );
+    // we need to add the transaction ID to the set of events that are currently queued to be sent
+    // even before the fake sync is called, so that the event constructor can check if the event is in the sending state
+    sendingQueueEventsByTxId.add(messageID);
     await _handleFakeSync(syncUpdate);
     final completer = Completer();
-    _sendingQueue.add(completer);
-    while (_sendingQueue.first != completer) {
-      await _sendingQueue.first.future;
+    sendingQueue.add(completer);
+    while (sendingQueue.first != completer) {
+      await sendingQueue.first.future;
     }
 
     final timeoutDate = DateTime.now().add(client.sendTimelineEventTimeout);
@@ -1127,7 +1150,8 @@ class Room {
               .unsigned![messageSendingStatusKey] = EventStatus.error.intValue;
           await _handleFakeSync(syncUpdate);
           completer.complete();
-          _sendingQueue.remove(completer);
+          sendingQueue.remove(completer);
+          sendingQueueEventsByTxId.remove(messageID);
           if (e is EventTooLarge ||
               (e is MatrixException && e.error == MatrixError.M_FORBIDDEN)) {
             rethrow;
@@ -1145,8 +1169,8 @@ class Room {
     syncUpdate.rooms!.join!.values.first.timeline!.events!.first.eventId = res;
     await _handleFakeSync(syncUpdate);
     completer.complete();
-    _sendingQueue.remove(completer);
-
+    sendingQueue.remove(completer);
+    sendingQueueEventsByTxId.remove(messageID);
     return res;
   }
 
@@ -1309,7 +1333,6 @@ class Room {
     );
 
     if (onHistoryReceived != null) onHistoryReceived();
-    this.prev_batch = resp.end;
 
     Future<void> loadFn() async {
       if (!((resp.chunk.isNotEmpty) && resp.end != null)) return;
@@ -1350,13 +1373,14 @@ class Room {
                 : null,
           ),
         ),
-        direction: Direction.b,
+        direction: direction,
       );
     }
 
     if (client.database != null) {
       await client.database?.transaction(() async {
-        if (storeInDatabase) {
+        if (storeInDatabase && direction == Direction.b) {
+          this.prev_batch = resp.end;
           await client.database?.setRoomPrevBatch(resp.end, id, client);
         }
         await loadFn();
@@ -1458,10 +1482,7 @@ class Room {
       for (var i = 0; i < events.length; i++) {
         if (events[i].type == EventTypes.Encrypted &&
             events[i].content['can_request_session'] == true) {
-          events[i] = await client.encryption!.decryptRoomEvent(
-            id,
-            events[i],
-          );
+          events[i] = await client.encryption!.decryptRoomEvent(events[i]);
         }
       }
     }
@@ -1509,17 +1530,20 @@ class Room {
     void Function()? onNewEvent,
     void Function()? onUpdate,
     String? eventContextId,
+    int? limit = Room.defaultHistoryCount,
   }) async {
     await postLoad();
 
-    List<Event> events;
+    var events = <Event>[];
 
     if (!isArchived) {
-      events = await client.database?.getEventList(
-            this,
-            limit: defaultHistoryCount,
-          ) ??
-          <Event>[];
+      await client.database?.transaction(() async {
+        events = await client.database?.getEventList(
+              this,
+              limit: limit,
+            ) ??
+            <Event>[];
+      });
     } else {
       final archive = client.getArchiveRoomFromCache(id);
       events = archive?.timeline.events.toList() ?? [];
@@ -1527,10 +1551,7 @@ class Room {
         // Try to decrypt encrypted events but don't update the database.
         if (encrypted && client.encryptionEnabled) {
           if (events[i].type == EventTypes.Encrypted) {
-            events[i] = await client.encryption!.decryptRoomEvent(
-              id,
-              events[i],
-            );
+            events[i] = await client.encryption!.decryptRoomEvent(events[i]);
           }
         }
       }
@@ -1574,7 +1595,6 @@ class Room {
             // for the fragmented timeline, we don't cache the decrypted
             //message in the database
             chunk.events[i] = await client.encryption!.decryptRoomEvent(
-              id,
               chunk.events[i],
             );
           } else if (client.database != null) {
@@ -1583,7 +1603,6 @@ class Room {
               for (var i = 0; i < chunk.events.length; i++) {
                 if (chunk.events[i].content['can_request_session'] == true) {
                   chunk.events[i] = await client.encryption!.decryptRoomEvent(
-                    id,
                     chunk.events[i],
                     store: !isArchived,
                     updateType: EventUpdateType.history,
@@ -1679,11 +1698,9 @@ class Room {
       for (final user in users) {
         setState(user); // at *least* cache this in-memory
         await client.database?.storeEventUpdate(
-          EventUpdate(
-            roomID: id,
-            type: EventUpdateType.state,
-            content: user.toJson(),
-          ),
+          id,
+          user,
+          EventUpdateType.state,
           client,
         );
       }
@@ -1760,11 +1777,9 @@ class Room {
       // Store user in database:
       await client.database?.transaction(() async {
         await client.database?.storeEventUpdate(
-          EventUpdate(
-            content: foundUser.toJson(),
-            roomID: id,
-            type: EventUpdateType.state,
-          ),
+          id,
+          foundUser,
+          EventUpdateType.state,
           client,
         );
       });
@@ -1911,10 +1926,7 @@ class Room {
       final event = Event.fromMatrixEvent(matrixEvent, this);
       if (event.type == EventTypes.Encrypted && client.encryptionEnabled) {
         // attempt decryption
-        return await client.encryption?.decryptRoomEvent(
-          id,
-          event,
-        );
+        return await client.encryption?.decryptRoomEvent(event);
       }
       return event;
     } on MatrixException catch (err) {
@@ -2048,6 +2060,8 @@ class Room {
   /// `m.sticker` use `canSendEvent('<event-type>')`.
   bool get canSendDefaultMessages {
     if (encrypted && !client.encryptionEnabled) return false;
+    if (isExtinct) return false;
+    if (membership != Membership.join) return false;
 
     return canSendEvent(encrypted ? EventTypes.Encrypted : EventTypes.Message);
   }
@@ -2197,7 +2211,11 @@ class Room {
           id,
           [],
           conditions: [
-            PushCondition(kind: 'event_match', key: 'room_id', pattern: id),
+            PushCondition(
+              kind: PushRuleConditions.eventMatch.name,
+              key: 'room_id',
+              pattern: id,
+            ),
           ],
         );
     }
@@ -2246,13 +2264,22 @@ class Room {
   }
 
   /// Changes the join rules. You should check first if the user is able to change it.
-  Future<void> setJoinRules(JoinRules joinRules) async {
+  Future<void> setJoinRules(
+    JoinRules joinRules, {
+    /// For restricted rooms, the id of the room where a user needs to be member.
+    /// Learn more at https://spec.matrix.org/latest/client-server-api/#restricted-rooms
+    String? allowConditionRoomId,
+  }) async {
     await client.setRoomStateWithKey(
       id,
       EventTypes.RoomJoinRules,
       '',
       {
         'join_rule': joinRules.toString().replaceAll('JoinRules.', ''),
+        if (allowConditionRoomId != null)
+          'allow': [
+            {'room_id': allowConditionRoomId, 'type': 'm.room_membership'},
+          ],
       },
     );
     return;

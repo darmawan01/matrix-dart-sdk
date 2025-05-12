@@ -114,7 +114,7 @@ void main() {
         httpClient: FakeMatrixApi(),
         databaseBuilder: getDatabase,
       );
-      final eventUpdateListFuture = matrix.onEvent.stream.toList();
+      final eventUpdateListFuture = matrix.onTimelineEvent.stream.toList();
       final toDeviceUpdateListFuture = matrix.onToDeviceEvent.stream.toList();
       var presenceCounter = 0;
       var accountDataCounter = 0;
@@ -278,66 +278,66 @@ void main() {
         null,
       );
 
-      await matrix.onEvent.close();
+      await matrix.onTimelineEvent.close();
 
       final eventUpdateList = await eventUpdateListFuture;
 
-      expect(eventUpdateList.length, 20);
+      expect(eventUpdateList.length, 3);
 
-      expect(eventUpdateList[0].content['type'], 'm.room.member');
-      expect(eventUpdateList[0].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[0].type, EventUpdateType.state);
+      expect(eventUpdateList[0].type, 'm.room.member');
+      expect(eventUpdateList[0].roomId, '!726s6s6q:example.com');
 
-      expect(eventUpdateList[1].content['type'], 'm.room.canonical_alias');
-      expect(eventUpdateList[1].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[1].type, EventUpdateType.state);
+      expect(eventUpdateList[1].type, 'm.room.message');
+      expect(eventUpdateList[1].roomId, '!726s6s6q:example.com');
 
-      expect(eventUpdateList[2].content['type'], 'm.room.encryption');
-      expect(eventUpdateList[2].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[2].type, EventUpdateType.state);
-
-      expect(eventUpdateList[3].content['type'], 'm.room.pinned_events');
-      expect(eventUpdateList[3].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[3].type, EventUpdateType.state);
-
-      expect(eventUpdateList[4].content['type'], 'm.room.member');
-      expect(eventUpdateList[4].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[4].type, EventUpdateType.timeline);
-
-      expect(eventUpdateList[5].content['type'], 'm.room.message');
-      expect(eventUpdateList[5].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[5].type, EventUpdateType.timeline);
-
-      expect(eventUpdateList[6].content['type'], 'm.typing');
-      expect(eventUpdateList[6].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[6].type, EventUpdateType.ephemeral);
-
-      expect(eventUpdateList[7].content['type'], 'm.receipt');
-      expect(eventUpdateList[7].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[7].type, EventUpdateType.ephemeral);
-
-      expect(eventUpdateList[8].content['type'], LatestReceiptState.eventType);
-      expect(eventUpdateList[8].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[8].type, EventUpdateType.accountData);
-
-      expect(eventUpdateList[9].content['type'], 'm.tag');
-      expect(eventUpdateList[9].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[9].type, EventUpdateType.accountData);
+      expect(eventUpdateList[2].type, 'm.room.message');
+      expect(eventUpdateList[2].roomId, '!726s6s6f:example.com');
 
       expect(
-        eventUpdateList[10].content['type'],
+        matrix
+            .getRoomById('!726s6s6q:example.com')
+            ?.roomAccountData['org.example.custom.room.config']
+            ?.type,
         'org.example.custom.room.config',
       );
-      expect(eventUpdateList[10].roomID, '!726s6s6q:example.com');
-      expect(eventUpdateList[10].type, EventUpdateType.accountData);
+      expect(
+        matrix
+            .getRoomById('!726s6s6q:example.com')
+            ?.roomAccountData[LatestReceiptState.eventType]
+            ?.type,
+        LatestReceiptState.eventType,
+      );
+      expect(
+        matrix
+            .getRoomById('!726s6s6q:example.com')
+            ?.roomAccountData['m.tag']
+            ?.type,
+        'm.tag',
+      );
 
-      expect(eventUpdateList[11].content['type'], 'm.room.member');
-      expect(eventUpdateList[11].roomID, '!calls:example.com');
-      expect(eventUpdateList[11].type, EventUpdateType.state);
+      expect(
+        matrix
+            .getRoomById('!726s6s6q:example.com')
+            ?.ephemerals['m.typing']
+            ?.content,
+        {
+          'user_ids': ['@alice:example.com'],
+        },
+      );
 
-      expect(eventUpdateList[12].content['type'], 'm.room.member');
-      expect(eventUpdateList[12].roomID, '!calls:example.com');
-      expect(eventUpdateList[12].type, EventUpdateType.state);
+      expect(
+        matrix
+            .getRoomById('!726s6s6q:example.com')
+            ?.ephemerals['m.receipt']
+            ?.content,
+        {
+          '\$7365636s6r6432:example.com': {
+            'm.read': {
+              '@alice:example.com': {'ts': 1436451550453},
+            },
+          },
+        },
+      );
 
       await matrix.onToDeviceEvent.close();
 
@@ -695,6 +695,35 @@ void main() {
       );
       expect(room.lastEvent!.content['body'], '* floooof');
 
+      // Older state event should not overwrite current state events
+      room.partial = false;
+      await matrix.handleSync(
+        SyncUpdate(
+          nextBatch: '',
+          rooms: RoomsUpdate(
+            join: {
+              room.id: JoinedRoomUpdate(
+                state: [
+                  MatrixEvent(
+                    type: EventTypes.RoomMember,
+                    content: {'displayname': 'Alice Catgirl'},
+                    senderId: '@alice:example.com',
+                    eventId: 'oldEventId',
+                    stateKey: '@alice:example.com',
+                    originServerTs:
+                        DateTime.now().subtract(const Duration(days: 365 * 30)),
+                  ),
+                ],
+              ),
+            },
+          ),
+        ),
+        direction: Direction.b,
+      );
+      room.partial = true;
+      expect(room.getParticipants().first.id, '@alice:example.com');
+      expect(room.getParticipants().first.displayName, 'Alice Margatroid');
+
       // accepts a consecutive edit
       await matrix.handleSync(
         SyncUpdate.fromJson({
@@ -730,6 +759,118 @@ void main() {
         }),
       );
       expect(room.lastEvent!.content['body'], '* foxies');
+    });
+
+    test('set prev_batch when invite then join', () async {
+      await matrix.handleSync(
+        SyncUpdate.fromJson({
+          'next_batch': '1',
+          'rooms': {
+            'invite': {
+              'new_room_id': {
+                'invite_state': {
+                  'events': [
+                    MatrixEvent(
+                      eventId: '0',
+                      type: EventTypes.RoomCreate,
+                      content: {'body': '0'},
+                      senderId: '@alice:example.com',
+                      stateKey: '@alice:example.com',
+                      originServerTs: DateTime.now(),
+                    ).toJson(),
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      );
+      expect(
+        matrix.rooms.singleWhereOrNull(
+          (element) => element.id == 'new_room_id',
+        ),
+        isNotNull,
+      );
+
+      final newRoom = matrix.getRoomById('new_room_id')!;
+
+      expect(newRoom.prev_batch, null);
+
+      await matrix.handleSync(
+        SyncUpdate.fromJson({
+          'next_batch': '3',
+          'rooms': {
+            'join': {
+              'new_room_id': {
+                'timeline': {
+                  'events': [
+                    MatrixEvent(
+                      eventId: '2',
+                      type: EventTypes.RoomCreate,
+                      content: {'body': '2'},
+                      senderId: '@alice:example.com',
+                      stateKey: '@alice:example.com',
+                      originServerTs: DateTime.now(),
+                    ).toJson(),
+                  ],
+                  'prev_batch': '1',
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      final timeline = await newRoom.getTimeline();
+      expect(newRoom.prev_batch, '1');
+      expect(timeline.events.length, 1);
+      expect(timeline.events.first.eventId, '2');
+
+      await matrix.handleSync(
+        SyncUpdate.fromJson({
+          'next_batch': '4',
+          'rooms': {
+            'join': {
+              'new_room_id': {
+                'timeline': {
+                  'events': [
+                    MatrixEvent(
+                      eventId: '3',
+                      type: EventTypes.Message,
+                      content: {'body': '3'},
+                      senderId: '@alice2:example.com',
+                      stateKey: '@alice2:example.com',
+                      originServerTs: DateTime.now(),
+                    ).toJson(),
+                  ],
+                  'prev_batch': '2',
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      expect(newRoom.prev_batch, '1');
+      expect(timeline.events.length, 2);
+      expect(timeline.events.last.eventId, '2');
+      expect(timeline.events.first.eventId, '3');
+
+      if (timeline.canRequestHistory) {
+        await timeline.requestHistory();
+      }
+      expect(newRoom.prev_batch, 'emptyHistoryResponse');
+      expect(timeline.events.length, 3);
+      expect(timeline.events.last.eventId, '0');
+      expect(timeline.events.first.eventId, '3');
+
+      while (timeline.canRequestHistory) {
+        await timeline.requestHistory();
+      }
+      expect(newRoom.prev_batch, null);
+      expect(timeline.events.length, 3);
+      expect(timeline.events.last.eventId, '0');
+      expect(timeline.events.first.eventId, '3');
     });
 
     test('getProfileFromUserId', () async {
@@ -797,7 +938,7 @@ void main() {
       await client.handleSync(
         SyncUpdate.fromJson(
           jsonDecode(
-            '{"next_batch":"s198512_227245_8_1404_23588_11_51066_267416_0_2639","rooms":{"join":{"!bWEUQDujMKwjxkCXYr:tim-alpha.staging.famedly.de":{"summary":{"m.heroes":["@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"],"m.joined_member_count":2,"m.invited_member_count":0},"state":{"events":[{"type":"m.room.create","content":{"type":"de.gematik.tim.roomtype.default.v1","room_version":"10","creator":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$qSgXGXjly6p5Kwbdb_PMBC_EF7nzHDbM23mvJFVeoiE","origin_server_ts":1709565579735,"unsigned":{"age":2255}}]},"timeline":{"events":[{"type":"m.room.member","content":{"membership":"join","displayname":"Tóboggen, Veronika Freifrau"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","event_id":"\$rQzxxTrSd9Y0koxIGlkalPAV_lwu94jLOA-8PSunY24","origin_server_ts":1709565579871,"unsigned":{"age":2119,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.power_levels","content":{"users":{"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de":100,"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de":100},"users_default":0,"events":{"m.room.name":50,"m.room.power_levels":100,"m.room.history_visibility":100,"m.room.canonical_alias":50,"m.room.avatar":50,"m.room.tombstone":100,"m.room.server_acl":100,"m.room.encryption":100},"events_default":0,"state_default":50,"ban":50,"kick":50,"redact":50,"invite":0,"historical":100},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$d6sgGs8PmkAbC3Iw3CkPT1QSub2zFTTvytegOxkPYPs","origin_server_ts":1709565579966,"unsigned":{"age":2024,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.join_rules","content":{"join_rule":"invite"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$EnA2Podch5181X4G1ZX34zaFGS_V4ZCZzLkBEfS_qyg","origin_server_ts":1709565579979,"unsigned":{"age":2011,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.history_visibility","content":{"history_visibility":"shared"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$6tNNo6ZkpZZrHrn8ZjXhMqI0CNv-VNNBw4R0h3_O-Tc","origin_server_ts":1709565579979,"unsigned":{"age":2011,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.guest_access","content":{"guest_access":"can_join"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$ViuL_LpN1sY9oYcGwycNjtp6FcGj__smUg8mzj3oa2o","origin_server_ts":1709565579980,"unsigned":{"age":2010,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.encryption","content":{"algorithm":"m.megolm.v1.aes-sha2"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$_e0az7OP7D78QU7DItiRAtlHlZmA07B5wenR93x5V1E","origin_server_ts":1709565579981,"unsigned":{"age":2009,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.member","content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","origin_server_ts":1709565580185,"unsigned":{"age":1805,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.notsoencrypted","content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"AwgAEpACEZw8Ymg99Yfl7VsXRIdczlQ3+YSJ6te3o6ka/XXP0h4ZsgR2bu1Q8puQ77fOpwX5dPnrrCi5SQg9Zv5/u+0QbFV4FKE/k03Vxao/tiswb6wST14x9kYkwViOrZe7fzg7VF9tCi8U88TqxGsPDDOVjO+WNxG8I9ldP1zvPsxYzVSyGPhaB5E+q6llwlXcQ56wvpf7Ke7gX4Ly2Dlxa8Bmy7aUSCBoWAt/xFRdzCOsE9qI8oxzuvk4RF0H/7bY+4DkGTsP1rIYgA7Q0JueIFb47Yu6pK26BCKo1yPAR8qvpe8vGBICm4slMbKaJN4RqBHtR0zc12E5DXud91o3mArqTksv1NEbI1F4XgDREl76WBw8a7MafDSuun09JuWpGxzPHvLVOUVny6tTJPRutsZLkmnTeMTiXnsPexUiY7UTYlzOMeeoUSTDuJXJz6CM+gSc52CiKoHK/gE","device_id":"TNLOYXJFXM","sender_key":"e9W0gpUcSEKOQ8P/xIdroHUpP7yG4EjQfueiAngESRk","session_id":"hhZ8TBs9Xp0dmuvC6XpDBYsAKnTqb8WiBhZMzHcbBXI"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","event_id":"\$KKIZX8cuB3S3uzS7CDtRlTkcaJRW73e2HW2NuW6OTEg","origin_server_ts":1709565580991,"unsigned":{"age":999,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.member","content":{"membership":"join","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$UNSLEyhC_93oQlt0tWoai4CCd3LH2GJJexM0WN2wxCA","origin_server_ts":1709565581813,"unsigned":{"replaces_state":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","prev_content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"prev_sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","age":177,"com.famedly.famedlysdk.message_sending_status":2}},{"type":"m.room.member","content":{"membership":"join","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$UNSLEyhC_93oQlt0tWoai4CCd3LH2GJJexM0WN2wxCA","origin_server_ts":1709565581813,"unsigned":{"replaces_state":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","prev_content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"prev_sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","age":177,"com.famedly.famedlysdk.message_sending_status":2}}],"limited":true,"prev_batch":"s198503_227245_8_1404_23588_11_51066_267416_0_2639"},"ephemeral":{"events":[]},"account_data":{"events":[]},"unread_notifications":{"highlight_count":0,"notification_count":0}}}},"presence":{"events":[{"type":"m.presence","content":{"presence":"online","last_active_ago":843,"currently_active":true},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"}]},"device_lists":{"changed":["@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"],"left":[]},"device_one_time_keys_count":{"signed_curve25519":65},"device_unused_fallback_key_types":["signed_curve25519"],"org.matrix.msc2732.device_unused_fallback_key_types":["signed_curve25519"]}',
+            '{"next_batch":"s198512_227245_8_1404_23588_11_51066_267416_0_2639","rooms":{"join":{"!bWEUQDujMKwjxkCXYr:tim-alpha.staging.famedly.de":{"summary":{"m.heroes":["@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"],"m.joined_member_count":2,"m.invited_member_count":0},"state":{"events":[{"type":"m.room.create","content":{"type":"de.gematik.tim.roomtype.default.v1","room_version":"10","creator":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$qSgXGXjly6p5Kwbdb_PMBC_EF7nzHDbM23mvJFVeoiE","origin_server_ts":1709565579735,"unsigned":{"age":2255}}]},"timeline":{"events":[{"type":"m.room.member","content":{"membership":"join","displayname":"Tóboggen, Veronika Freifrau"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","event_id":"\$rQzxxTrSd9Y0koxIGlkalPAV_lwu94jLOA-8PSunY24","origin_server_ts":1709565579871,"unsigned":{"age":2119}},{"type":"m.room.power_levels","content":{"users":{"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de":100,"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de":100},"users_default":0,"events":{"m.room.name":50,"m.room.power_levels":100,"m.room.history_visibility":100,"m.room.canonical_alias":50,"m.room.avatar":50,"m.room.tombstone":100,"m.room.server_acl":100,"m.room.encryption":100},"events_default":0,"state_default":50,"ban":50,"kick":50,"redact":50,"invite":0,"historical":100},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$d6sgGs8PmkAbC3Iw3CkPT1QSub2zFTTvytegOxkPYPs","origin_server_ts":1709565579966,"unsigned":{"age":2024}},{"type":"m.room.join_rules","content":{"join_rule":"invite"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$EnA2Podch5181X4G1ZX34zaFGS_V4ZCZzLkBEfS_qyg","origin_server_ts":1709565579979,"unsigned":{"age":2011}},{"type":"m.room.history_visibility","content":{"history_visibility":"shared"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$6tNNo6ZkpZZrHrn8ZjXhMqI0CNv-VNNBw4R0h3_O-Tc","origin_server_ts":1709565579979,"unsigned":{"age":2011}},{"type":"m.room.guest_access","content":{"guest_access":"can_join"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$ViuL_LpN1sY9oYcGwycNjtp6FcGj__smUg8mzj3oa2o","origin_server_ts":1709565579980,"unsigned":{"age":2010}},{"type":"m.room.encryption","content":{"algorithm":"m.megolm.v1.aes-sha2"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"","event_id":"\$_e0az7OP7D78QU7DItiRAtlHlZmA07B5wenR93x5V1E","origin_server_ts":1709565579981,"unsigned":{"age":2009}},{"type":"m.room.member","content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","origin_server_ts":1709565580185,"unsigned":{"age":1805}},{"type":"m.room.notsoencrypted","content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"AwgAEpACEZw8Ymg99Yfl7VsXRIdczlQ3+YSJ6te3o6ka/XXP0h4ZsgR2bu1Q8puQ77fOpwX5dPnrrCi5SQg9Zv5/u+0QbFV4FKE/k03Vxao/tiswb6wST14x9kYkwViOrZe7fzg7VF9tCi8U88TqxGsPDDOVjO+WNxG8I9ldP1zvPsxYzVSyGPhaB5E+q6llwlXcQ56wvpf7Ke7gX4Ly2Dlxa8Bmy7aUSCBoWAt/xFRdzCOsE9qI8oxzuvk4RF0H/7bY+4DkGTsP1rIYgA7Q0JueIFb47Yu6pK26BCKo1yPAR8qvpe8vGBICm4slMbKaJN4RqBHtR0zc12E5DXud91o3mArqTksv1NEbI1F4XgDREl76WBw8a7MafDSuun09JuWpGxzPHvLVOUVny6tTJPRutsZLkmnTeMTiXnsPexUiY7UTYlzOMeeoUSTDuJXJz6CM+gSc52CiKoHK/gE","device_id":"TNLOYXJFXM","sender_key":"e9W0gpUcSEKOQ8P/xIdroHUpP7yG4EjQfueiAngESRk","session_id":"hhZ8TBs9Xp0dmuvC6XpDBYsAKnTqb8WiBhZMzHcbBXI"},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","event_id":"\$KKIZX8cuB3S3uzS7CDtRlTkcaJRW73e2HW2NuW6OTEg","origin_server_ts":1709565580991,"unsigned":{"age":999}},{"type":"m.room.member","content":{"membership":"join","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$UNSLEyhC_93oQlt0tWoai4CCd3LH2GJJexM0WN2wxCA","origin_server_ts":1709565581813,"unsigned":{"replaces_state":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","prev_content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"prev_sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","age":177}},{"type":"m.room.member","content":{"membership":"join","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"sender":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","state_key":"@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","event_id":"\$UNSLEyhC_93oQlt0tWoai4CCd3LH2GJJexM0WN2wxCA","origin_server_ts":1709565581813,"unsigned":{"replaces_state":"\$4sZ3CF67SUh0n5WG0ZKS47Epj9B_d842RJjnrQmUKQo","prev_content":{"is_direct":true,"membership":"invite","displayname":"Düsterbehn-Hardenbergshausen, Michael von"},"prev_sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de","age":177}}],"limited":true,"prev_batch":"s198503_227245_8_1404_23588_11_51066_267416_0_2639"},"ephemeral":{"events":[]},"account_data":{"events":[]},"unread_notifications":{"highlight_count":0,"notification_count":0}}}},"presence":{"events":[{"type":"m.presence","content":{"presence":"online","last_active_ago":843,"currently_active":true},"sender":"@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"}]},"device_lists":{"changed":["@duesterbehn-hardenbergshausen_michael_von:tim-alpha.staging.famedly.de","@toboggen_veronika_freifrau:tim-alpha.staging.famedly.de"],"left":[]},"device_one_time_keys_count":{"signed_curve25519":65},"device_unused_fallback_key_types":["signed_curve25519"],"org.matrix.msc2732.device_unused_fallback_key_types":["signed_curve25519"]}',
           ),
         ),
       );
@@ -1132,6 +1273,23 @@ void main() {
     });
     test('startDirectChat', () async {
       await matrix.startDirectChat('@alice:example.com', waitForSync: false);
+
+      expect(
+        json.decode(
+          FakeMatrixApi.calledEndpoints['/client/v3/createRoom']?.last,
+        ),
+        {
+          'initial_state': [
+            {
+              'content': {'algorithm': 'm.megolm.v1.aes-sha2'},
+              'type': 'm.room.encryption',
+            }
+          ],
+          'invite': ['@alice:example.com'],
+          'is_direct': true,
+          'preset': 'trusted_private_chat',
+        },
+      );
     });
 
     test('createGroupChat', () async {

@@ -41,7 +41,8 @@ class Timeline {
   final void Function(int index)? onRemove;
   final void Function()? onNewEvent;
 
-  StreamSubscription<EventUpdate>? sub;
+  StreamSubscription<Event>? timelineSub;
+  StreamSubscription<Event>? historySub;
   StreamSubscription<SyncUpdate>? roomSub;
   StreamSubscription<String>? sessionIdReceivedSub;
   StreamSubscription<String>? cancelSendEventSub;
@@ -151,6 +152,9 @@ class Timeline {
             );
 
       if (eventsFromStore != null && eventsFromStore.isNotEmpty) {
+        for (final e in eventsFromStore) {
+          addAggregatedEvent(e);
+        }
         // Fetch all users from database we have got here.
         for (final event in events) {
           if (room.getState(EventTypes.RoomMember, event.senderId) != null) {
@@ -263,7 +267,9 @@ class Timeline {
 
     if (!allowNewEvent) {
       if (resp.start == resp.end ||
-          (resp.end == null && direction == Direction.f)) allowNewEvent = true;
+          (resp.end == null && direction == Direction.f)) {
+        allowNewEvent = true;
+      }
 
       if (allowNewEvent) {
         Logs().d('We now allow sync update into the timeline.');
@@ -279,7 +285,6 @@ class Timeline {
       for (var i = 0; i < newEvents.length; i++) {
         if (newEvents[i].type == EventTypes.Encrypted) {
           newEvents[i] = await room.client.encryption!.decryptRoomEvent(
-            room.id,
             newEvents[i],
           );
         }
@@ -321,7 +326,18 @@ class Timeline {
     this.onNewEvent,
     required this.chunk,
   }) {
-    sub = room.client.onEvent.stream.listen(_handleEventUpdate);
+    timelineSub = room.client.onTimelineEvent.stream.listen(
+      (event) => _handleEventUpdate(
+        event,
+        EventUpdateType.timeline,
+      ),
+    );
+    historySub = room.client.onHistoryEvent.stream.listen(
+      (event) => _handleEventUpdate(
+        event,
+        EventUpdateType.history,
+      ),
+    );
 
     // If the timeline is limited we want to clear our events cache
     roomSub = room.client.onSync.stream
@@ -367,7 +383,9 @@ class Timeline {
   /// Don't forget to call this before you dismiss this object!
   void cancelSubscriptions() {
     // ignore: discarded_futures
-    sub?.cancel();
+    timelineSub?.cancel();
+    // ignore: discarded_futures
+    historySub?.cancel();
     // ignore: discarded_futures
     roomSub?.cancel();
     // ignore: discarded_futures
@@ -388,7 +406,6 @@ class Timeline {
             events[i].messageType == MessageTypes.BadEncrypted &&
             events[i].content['session_id'] == sessionId) {
           events[i] = await encryption.decryptRoomEvent(
-            room.id,
             events[i],
             store: true,
             updateType: EventUpdateType.history,
@@ -459,7 +476,7 @@ class Timeline {
     for (i = 0; i < events.length; i++) {
       final searchHaystack = <String>{events[i].eventId};
 
-      final txnid = events[i].unsigned?.tryGet<String>('transaction_id');
+      final txnid = events[i].transactionId;
       if (txnid != null) {
         searchHaystack.add(txnid);
       }
@@ -475,9 +492,7 @@ class Timeline {
       (e) =>
           e.matchesEventOrTransactionId(event.eventId) ||
           event.unsigned != null &&
-              e.matchesEventOrTransactionId(
-                event.unsigned?.tryGet<String>('transaction_id'),
-              ),
+              e.matchesEventOrTransactionId(event.transactionId),
     );
   }
 
@@ -488,12 +503,12 @@ class Timeline {
     if (relationshipType == null || relationshipEventId == null) {
       return; // nothing to do
     }
-    final events = (aggregatedEvents[relationshipEventId] ??=
+    final e = (aggregatedEvents[relationshipEventId] ??=
         <String, Set<Event>>{})[relationshipType] ??= <Event>{};
     // remove a potential old event
-    _removeEventFromSet(events, event);
+    _removeEventFromSet(e, event);
     // add the new one
-    events.add(event);
+    e.add(event);
     if (onChange != null) {
       final index = _findEvent(event_id: relationshipEventId);
       onChange?.call(index);
@@ -502,53 +517,45 @@ class Timeline {
 
   void removeAggregatedEvent(Event event) {
     aggregatedEvents.remove(event.eventId);
-    if (event.unsigned != null) {
-      aggregatedEvents.remove(event.unsigned?['transaction_id']);
+    if (event.transactionId != null) {
+      aggregatedEvents.remove(event.transactionId);
     }
     for (final types in aggregatedEvents.values) {
-      for (final events in types.values) {
-        _removeEventFromSet(events, event);
+      for (final e in types.values) {
+        _removeEventFromSet(e, event);
       }
     }
   }
 
-  void _handleEventUpdate(EventUpdate eventUpdate, {bool update = true}) {
+  void _handleEventUpdate(
+    Event event,
+    EventUpdateType type, {
+    bool update = true,
+  }) {
     try {
-      if (eventUpdate.roomID != room.id) return;
+      if (event.roomId != room.id) return;
 
-      if (eventUpdate.type != EventUpdateType.timeline &&
-          eventUpdate.type != EventUpdateType.history) {
+      if (type != EventUpdateType.timeline && type != EventUpdateType.history) {
         return;
       }
 
-      if (eventUpdate.type == EventUpdateType.timeline) {
+      if (type == EventUpdateType.timeline) {
         onNewEvent?.call();
       }
 
       if (!allowNewEvent) return;
 
-      final status = eventStatusFromInt(
-        eventUpdate.content['status'] ??
-            (eventUpdate.content['unsigned'] is Map<String, dynamic>
-                ? eventUpdate.content['unsigned'][messageSendingStatusKey]
-                : null) ??
-            EventStatus.synced.intValue,
-      );
+      final status = event.status;
 
       final i = _findEvent(
-        event_id: eventUpdate.content['event_id'],
-        unsigned_txid: eventUpdate.content['unsigned'] is Map
-            ? eventUpdate.content['unsigned']['transaction_id']
-            : null,
+        event_id: event.eventId,
+        unsigned_txid: event.transactionId,
       );
 
       if (i < events.length) {
         // if the old status is larger than the new one, we also want to preserve the old status
         final oldStatus = events[i].status;
-        events[i] = Event.fromJson(
-          eventUpdate.content,
-          room,
-        );
+        events[i] = event;
         // do we preserve the status? we should allow 0 -> -1 updates and status increases
         if ((latestEventStatus(status, oldStatus) == oldStatus) &&
             !(status.isError && oldStatus.isSending)) {
@@ -557,32 +564,28 @@ class Timeline {
         addAggregatedEvent(events[i]);
         onChange?.call(i);
       } else {
-        final newEvent = Event.fromJson(
-          eventUpdate.content,
-          room,
-        );
-
-        if (eventUpdate.type == EventUpdateType.history &&
+        if (type == EventUpdateType.history &&
             events.indexWhere(
-                  (e) => e.eventId == eventUpdate.content['event_id'],
+                  (e) => e.eventId == event.eventId,
                 ) !=
-                -1) return;
+                -1) {
+          return;
+        }
         var index = events.length;
-        if (eventUpdate.type == EventUpdateType.history) {
-          events.add(newEvent);
+        if (type == EventUpdateType.history) {
+          events.add(event);
         } else {
           index = events.firstIndexWhereNotError;
-          events.insert(index, newEvent);
+          events.insert(index, event);
         }
         onInsert?.call(index);
 
-        addAggregatedEvent(newEvent);
+        addAggregatedEvent(event);
       }
 
       // Handle redaction events
-      if (eventUpdate.content['type'] == EventTypes.Redaction) {
-        final index =
-            _findEvent(event_id: eventUpdate.content.tryGet<String>('redacts'));
+      if (event.type == EventTypes.Redaction) {
+        final index = _findEvent(event_id: event.redacts);
         if (index < events.length) {
           removeAggregatedEvent(events[index]);
 
@@ -596,12 +599,7 @@ class Timeline {
             }
           }
 
-          events[index].setRedactionEvent(
-            Event.fromJson(
-              eventUpdate.content,
-              room,
-            ),
-          );
+          events[index].setRedactionEvent(event);
           onChange?.call(index);
         }
       }
@@ -703,7 +701,7 @@ class Timeline {
         for (final matrixEvent in resp.chunk) {
           var event = Event.fromMatrixEvent(matrixEvent, room);
           if (event.type == EventTypes.Encrypted && encryption != null) {
-            event = await encryption.decryptRoomEvent(room.id, event);
+            event = await encryption.decryptRoomEvent(event);
             if (event.type == EventTypes.Encrypted &&
                 event.messageType == MessageTypes.BadEncrypted &&
                 event.content['can_request_session'] == true) {

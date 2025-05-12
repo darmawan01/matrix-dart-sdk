@@ -23,7 +23,6 @@ import 'package:collection/collection.dart';
 import 'package:html/parser.dart';
 
 import 'package:matrix/matrix.dart';
-import 'package:matrix/src/utils/event_localizations.dart';
 import 'package:matrix/src/utils/file_send_request_credentials.dart';
 import 'package:matrix/src/utils/html_to_text.dart';
 import 'package:matrix/src/utils/markdown.dart';
@@ -78,6 +77,8 @@ class Event extends MatrixEvent {
 
   MatrixEvent? get originalSource => _originalSource;
 
+  String? get transactionId => unsigned?.tryGet<String>('transaction_id');
+
   Event({
     this.status = defaultStatus,
     required Map<String, dynamic> super.content,
@@ -88,6 +89,7 @@ class Event extends MatrixEvent {
     Map<String, dynamic>? unsigned,
     Map<String, dynamic>? prevContent,
     String? stateKey,
+    super.redacts,
     required this.room,
     MatrixEvent? originalSource,
   })  : _originalSource = originalSource,
@@ -124,7 +126,17 @@ class Event extends MatrixEvent {
           originServerTs.millisecondsSinceEpoch;
 
       final room = this.room;
-      if (age > room.client.sendTimelineEventTimeout.inMilliseconds) {
+
+      if (
+          // We don't want to mark the event as failed if it's the lastEvent in the room
+          // since that would be a race condition (with the same event from timeline)
+          // The `room.lastEvent` is null at the time this constructor is called for it,
+          // there's no other way to check this.
+          room.lastEvent?.eventId != null &&
+              // If the event is in the sending queue, then we don't mess with it.
+              !room.sendingQueueEventsByTxId.contains(transactionId) &&
+              // Else, if the event is older than the timeout, then we mark it as failed.
+              age > room.client.sendTimelineEventTimeout.inMilliseconds) {
         // Update this event in database and open timelines
         final json = toJson();
         json['unsigned'] ??= <String, dynamic>{};
@@ -163,20 +175,28 @@ class Event extends MatrixEvent {
   factory Event.fromMatrixEvent(
     MatrixEvent matrixEvent,
     Room room, {
-    EventStatus status = defaultStatus,
+    EventStatus? status,
   }) =>
-      Event(
-        status: status,
-        content: matrixEvent.content,
-        type: matrixEvent.type,
-        eventId: matrixEvent.eventId,
-        senderId: matrixEvent.senderId,
-        originServerTs: matrixEvent.originServerTs,
-        unsigned: matrixEvent.unsigned,
-        prevContent: matrixEvent.prevContent,
-        stateKey: matrixEvent.stateKey,
-        room: room,
-      );
+      matrixEvent is Event
+          ? matrixEvent
+          : Event(
+              status: status ??
+                  eventStatusFromInt(
+                    matrixEvent.unsigned
+                            ?.tryGet<int>(messageSendingStatusKey) ??
+                        defaultStatus.intValue,
+                  ),
+              content: matrixEvent.content,
+              type: matrixEvent.type,
+              eventId: matrixEvent.eventId,
+              senderId: matrixEvent.senderId,
+              originServerTs: matrixEvent.originServerTs,
+              unsigned: matrixEvent.unsigned,
+              prevContent: matrixEvent.prevContent,
+              stateKey: matrixEvent.stateKey,
+              redacts: matrixEvent.redacts,
+              room: room,
+            );
 
   /// Get a State event from a table row or from the event stream.
   factory Event.fromJson(
@@ -205,6 +225,7 @@ class Event extends MatrixEvent {
       ),
       unsigned: unsigned,
       room: room,
+      redacts: jsonPayload['redacts'],
       originalSource:
           originalSource.isEmpty ? null : MatrixEvent.fromJson(originalSource),
     );
@@ -229,6 +250,9 @@ class Event extends MatrixEvent {
     if (originalSource != null) {
       data['original_source'] = originalSource?.toJson();
     }
+    if (redacts != null) {
+      data['redacts'] = redacts;
+    }
     data['status'] = status.intValue;
     return data;
   }
@@ -241,6 +265,7 @@ class Event extends MatrixEvent {
         typeKey: type,
         senderId: senderId,
         room: room,
+        originServerTs: originServerTs,
       );
 
   String get messageType => type == EventTypes.Sticker
@@ -430,10 +455,9 @@ class Event extends MatrixEvent {
       final inReplyTo = credentials.inReplyTo == null
           ? null
           : await room.getEventById(credentials.inReplyTo!);
-      txid ??= unsigned?.tryGet<String>('transaction_id');
       return await room.sendFileEvent(
         file,
-        txid: txid,
+        txid: txid ?? transactionId,
         thumbnail: thumbnail,
         inReplyTo: inReplyTo,
         editEventId: credentials.editEventId,
@@ -446,7 +470,7 @@ class Event extends MatrixEvent {
     // in the `sendEvent` method to transition -1 -> 0 -> 1 -> 2
     return await room.sendEvent(
       content,
-      txid: txid ?? unsigned?.tryGet<String>('transaction_id') ?? eventId,
+      txid: txid ?? transactionId ?? eventId,
     );
   }
 
@@ -457,13 +481,35 @@ class Event extends MatrixEvent {
   Future<String?> redactEvent({String? reason, String? txid}) async =>
       await room.redactEvent(eventId, reason: reason, txid: txid);
 
-  /// Searches for the reply event in the given timeline.
+  /// Searches for the reply event in the given timeline. Also returns the
+  /// event fallback if the relationship type is `m.thread`.
+  /// https://spec.matrix.org/v1.14/client-server-api/#fallback-for-unthreaded-clients
   Future<Event?> getReplyEvent(Timeline timeline) async {
-    if (relationshipType != RelationshipTypes.reply) return null;
-    final relationshipEventId = this.relationshipEventId;
-    return relationshipEventId == null
-        ? null
-        : await timeline.getEventById(relationshipEventId);
+    switch (relationshipType) {
+      case RelationshipTypes.reply:
+        final relationshipEventId = this.relationshipEventId;
+        return relationshipEventId == null
+            ? null
+            : await timeline.getEventById(relationshipEventId);
+
+      case RelationshipTypes.thread:
+        final relationshipContent =
+            content.tryGetMap<String, Object?>('m.relates_to');
+        if (relationshipContent == null) return null;
+        final String? relationshipEventId;
+        if (relationshipContent.tryGet<bool>('is_falling_back') == true) {
+          relationshipEventId = relationshipContent
+              .tryGetMap<String, Object?>('m.in_reply_to')
+              ?.tryGet<String>('event_id');
+        } else {
+          relationshipEventId = this.relationshipEventId;
+        }
+        return relationshipEventId == null
+            ? null
+            : await timeline.getEventById(relationshipEventId);
+      default:
+        return null;
+    }
   }
 
   /// If this event is encrypted and the decryption was not successful because
@@ -778,7 +824,13 @@ class Event extends MatrixEvent {
         throw ('Unable to decrypt file');
       }
     }
-    return MatrixFile(bytes: uint8list, name: body);
+
+    final filename = content.tryGet<String>('filename') ?? body;
+    return MatrixFile(
+      bytes: uint8list,
+      name: filename,
+      mimeType: attachmentMimetype,
+    );
   }
 
   /// Returns if this is a known event type.
@@ -935,10 +987,8 @@ class Event extends MatrixEvent {
     // return the html tags free body
     if (removeMarkdown == true) {
       final html = markdown(body, convertLinebreaks: false);
-      final document = parse(
-        html,
-      );
-      body = document.documentElement?.text ?? body;
+      final document = parse(html);
+      body = document.documentElement?.text.trim() ?? body;
     }
     return body;
   }
@@ -958,7 +1008,7 @@ class Event extends MatrixEvent {
     if (eventId == search) {
       return true;
     }
-    return unsigned?['transaction_id'] == search;
+    return transactionId == search;
   }
 
   /// Get the relationship type of an event. `null` if there is none

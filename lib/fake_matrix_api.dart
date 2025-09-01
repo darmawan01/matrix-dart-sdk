@@ -84,6 +84,7 @@ class FakeMatrixApi extends BaseClient {
     StreamSubscription<String>? sub;
     sub = currentApi!._apiCallStream.stream.listen((action) {
       if (test(action)) {
+        // ignore: discarded_futures
         sub?.cancel();
         completer.complete(action);
       }
@@ -225,7 +226,7 @@ class FakeMatrixApi extends BaseClient {
           accountData: [sdk.BasicEvent(content: decodeJson(data), type: type)],
         );
         if (_client?.database != null) {
-          await _client?.database?.transaction(() async {
+          await _client?.database.transaction(() async {
             await _client?.handleSync(syncUpdate);
           });
         } else {
@@ -255,7 +256,7 @@ class FakeMatrixApi extends BaseClient {
           ),
         );
         if (_client?.database != null) {
-          await _client?.database?.transaction(() async {
+          await _client?.database.transaction(() async {
             await _client?.handleSync(syncUpdate);
           });
         } else {
@@ -600,16 +601,6 @@ class FakeMatrixApi extends BaseClient {
           },
           'timeline': {
             'events': [
-              {
-                'sender': '@bob:example.com',
-                'type': 'm.room.member',
-                'state_key': '@bob:example.com',
-                'content': {'membership': 'join'},
-                'prev_content': {'membership': 'invite'},
-                'origin_server_ts': 1417731086795,
-                'event_id': '\$7365636s6r6432:example.com',
-                'unsigned': {'foo': 'bar'},
-              },
               {
                 'sender': '@alice:example.com',
                 'type': 'm.room.message',

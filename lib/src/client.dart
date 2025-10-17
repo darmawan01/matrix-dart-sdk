@@ -2335,6 +2335,12 @@ class Client extends MatrixApi {
     }
   }
 
+  Duration _defaultSyncTimeout = const Duration(seconds: 30);
+
+  set defaultSyncTimeout(Duration timeout) {
+    _defaultSyncTimeout = timeout;
+  }
+
   /// Pass a timeout to set how long the server waits before sending an empty response.
   /// (Corresponds to the timeout param on the /sync request.)
   Future<void> _innerSync({Duration? timeout}) async {
@@ -2351,7 +2357,7 @@ class Client extends MatrixApi {
       // The timeout we send to the server for the sync loop. It says to the
       // server that we want to receive an empty sync response after this
       // amount of time if nothing happens.
-      if (prevBatch != null) timeout ??= const Duration(seconds: 30);
+      if (prevBatch != null) timeout ??= _defaultSyncTimeout;
 
       await ensureNotSoftLoggedOut(
         timeout == null ? const Duration(minutes: 1) : (timeout * 2),

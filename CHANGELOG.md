@@ -1,3 +1,59 @@
+## [3.0.1] 15th October 2025
+- feat: Make display sending event configurable in Room.sendEvent() (Christian Kußowski)
+- chore: tidy up call membership event (td)
+- fix: Remove avatar crashes with invalid uri (Christian Kußowski)
+
+## [3.0.0] 7th October 2025
+
+#### Migration hints:
+
+- With extended profiles in Matrix 1.16 you now have to use `Client.getProfileField()` instead of `Client.getAvatar()` or `Client.getDisplayname()`.
+
+- You no longer need to ship [flutter_openssl_crypto](https://pub.dev/packages/flutter_openssl_crypto). The necessary encryption algorithms now come from the Vodozemac package. This should make the platform integration much easier.
+
+#### All changes:
+
+- feat: Add deleteDeviceDisplayName() method to matrix API (Christian Kußowski)
+- feat: Add onProgress for upload and download methods (Christian Kußowski)
+- feat: Auto refresh last event after limited timeline (Christian Kußowski)
+- feat: Implement get mentions from event content (Christian Kußowski)
+- feat: Leave DM rooms and invite when ignoring a user (Christian Kußowski)
+- feat: reactions for voip calls (td)
+- feat: Set m.mention field when sending text event (Christian Kußowski)
+- fix: (BREAKING CHANGE) remove only your device call membership if room is not msc3757 (td)
+- fix: Set unread notification count only if not null in sync (Christian Kußowski)
+- refactor: migrate to web and js_interop pkgs (Karthikeyan S)
+- refactor: Return a better default for lastEventReceivedTime (Christian Kußowski)
+- refactor: Support matrix spec 1.16 (Christian Kußowski)
+- refactor: Upgrade to vodozemac cryptoutils (Christian Kußowski)
+- chore: Remove unused callbacks (Christian Kußowski)
+- chore: Remove unused dependency (Christian Kußowski)
+- chore: Revert on upload progress (Christian Kußowski)
+
+## [2.0.1] 9th Sept 2025
+- fix: scheduled event list init (td)
+
+## [2.0.0] 9th Sept 2025
+
+There have been some breaking changes to the VoIP codebase. Specifically, you will have to pass your instance of the VoIP class to existing `getCallMemberships*` functions which are an extension on the Room class. 
+
+- feat: delayed and device owned state events support for group calls (td)
+- feat: allow setting keyring size (td)
+- feat: (BREAKING CHANGE) allow setting custom call timeout values, you will have to pass the voip class to a bunch of existing call related methods though (td)
+- feat: also debounce join key rotation (td)
+- fix: fix the issue that user avatar can not be loaded on windows (Eric Lin)
+- fix: reuse a deviceId if available (td)
+- refactor: (BREAKING CHANGE) you can now get the matrix eventId from CallMembership(s) (td)
+- refactor: Allow room ids to not have a domain (Christian Kußowski)
+- refactor: Clean up new dart version lints (Christian Kußowski)
+- refactor: Make signableJson type safe with type safe class (Christian Kußowski)
+- refactor: Remove dynamic in cross signing code (Christian Kußowski)
+- refactor: Restrict canChangeStateEvent, canInvite and canSendEvent to joined users (Christian Kußowski)
+- refactor: Restrict canKick canBan and canRedact to joined users (Christian Kußowski)
+- refactor: Restrict canRequestHistory to joined or archived rooms (Christian Kußowski)
+- refactor: Sync for unknown room in push helper and catch timeout exceptions (Christian Kußowski)
+
+
 ## [1.1.0] 14th July 2025
 - fix: (BREAKING) Can not logout and login again with same Client object (Christian Kußowski)
 - refactor: Clean up new dart version lints (Christian Kußowski)

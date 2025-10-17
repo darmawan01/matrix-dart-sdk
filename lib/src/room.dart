@@ -377,6 +377,73 @@ class Room {
 
   Event? lastEvent;
 
+  /// Fetches the most recent event in the timeline from the server to have
+  /// a valid preview after receiving a limited timeline from the sync. Will
+  /// be triggered by the sync loop on demand. Multiple requests will be
+  /// combined to the same request.
+  Future<Event?> refreshLastEvent({
+    timeout = const Duration(seconds: 30),
+  }) async {
+    final lastEvent = _refreshingLastEvent ??= _refreshLastEvent();
+    _refreshingLastEvent = null;
+    return lastEvent;
+  }
+
+  Future<Event?>? _refreshingLastEvent;
+
+  Future<Event?> _refreshLastEvent({
+    timeout = const Duration(seconds: 30),
+  }) async {
+    if (membership != Membership.join) return null;
+
+    final filter = StateFilter(types: client.roomPreviewLastEvents.toList());
+    final result = await client
+        .getRoomEvents(
+          id,
+          Direction.b,
+          limit: 1,
+          filter: jsonEncode(filter.toJson()),
+        )
+        .timeout(timeout);
+    final matrixEvent = result.chunk.firstOrNull;
+    if (matrixEvent == null) {
+      if (lastEvent?.type == EventTypes.refreshingLastEvent) {
+        lastEvent = null;
+      }
+      Logs().d('No last event found for room', id);
+      return null;
+    }
+    var event = Event.fromMatrixEvent(
+      matrixEvent,
+      this,
+      status: EventStatus.synced,
+    );
+    if (event.type == EventTypes.Encrypted) {
+      final encryption = client.encryption;
+      if (encryption != null) {
+        event = await encryption.decryptRoomEvent(event);
+      }
+    }
+    lastEvent = event;
+
+    Logs().d('Refreshed last event for room', id);
+
+    // Trigger sync handling so that lastEvent gets stored and room list gets
+    // updated.
+    await _handleFakeSync(
+      SyncUpdate(
+        nextBatch: '',
+        rooms: RoomsUpdate(
+          join: {
+            id: JoinedRoomUpdate(timeline: TimelineUpdate(limited: false)),
+          },
+        ),
+      ),
+    );
+
+    return event;
+  }
+
   void setEphemeral(BasicEvent ephemeral) {
     ephemerals[ephemeral.type] = ephemeral;
     if (ephemeral.type == 'm.typing') {
@@ -443,8 +510,16 @@ class Room {
   String get displayname => getLocalizedDisplayname();
 
   /// When was the last event received.
-  DateTime get latestEventReceivedTime =>
-      lastEvent?.originServerTs ?? DateTime.now();
+  DateTime get latestEventReceivedTime {
+    final lastEventTime = lastEvent?.originServerTs;
+    if (lastEventTime != null) return lastEventTime;
+
+    if (membership == Membership.invite) return DateTime.now();
+    final createEvent = getState(EventTypes.RoomCreate);
+    if (createEvent is MatrixEvent) return createEvent.originServerTs;
+
+    return DateTime(0);
+  }
 
   /// Call the Matrix API to change the name of this room. Returns the event ID of the
   /// new m.room.name event.
@@ -635,6 +710,13 @@ class Room {
     String? threadRootEventId,
     String? threadLastEventId,
     StringBuffer? commandStdout,
+    bool addMentions = true,
+
+    /// Displays an event in the timeline with the transaction ID as the event
+    /// ID and a status of SENDING, SENT or ERROR until it gets replaced by
+    /// the sync event. Using this can display a different sort order of events
+    /// as the sync event does replace but not relocate the pending event.
+    bool displayPendingEvent = true,
   }) {
     if (parseCommands) {
       return client.parseAndRunCommand(
@@ -652,6 +734,41 @@ class Room {
       'msgtype': msgtype,
       'body': message,
     };
+
+    if (addMentions) {
+      var potentialMentions = message
+          .split('@')
+          .map(
+            (text) => text.startsWith('[')
+                ? '@${text.split(']').first}]'
+                : '@${text.split(RegExp(r'\s+')).first}',
+          )
+          .toList()
+        ..removeAt(0);
+
+      final hasRoomMention = potentialMentions.remove('@room');
+
+      potentialMentions = potentialMentions
+          .map(
+            (mention) =>
+                mention.isValidMatrixId ? mention : getMention(mention),
+          )
+          .nonNulls
+          .toSet() // Deduplicate
+          .toList()
+        ..remove(client.userID); // We should never mention ourself.
+
+      // https://spec.matrix.org/v1.7/client-server-api/#mentioning-the-replied-to-user
+      if (inReplyTo != null) potentialMentions.add(inReplyTo.senderId);
+
+      if (hasRoomMention || potentialMentions.isNotEmpty) {
+        event['m.mentions'] = {
+          if (hasRoomMention) 'room': true,
+          if (potentialMentions.isNotEmpty) 'user_ids': potentialMentions,
+        };
+      }
+    }
+
     if (parseMarkdown) {
       final html = markdown(
         event['body'],
@@ -673,6 +790,7 @@ class Room {
       editEventId: editEventId,
       threadRootEventId: threadRootEventId,
       threadLastEventId: threadLastEventId,
+      displayPendingEvent: displayPendingEvent,
     );
   }
 
@@ -727,6 +845,12 @@ class Room {
     Map<String, dynamic>? extraContent,
     String? threadRootEventId,
     String? threadLastEventId,
+
+    /// Displays an event in the timeline with the transaction ID as the event
+    /// ID and a status of SENDING, SENT or ERROR until it gets replaced by
+    /// the sync event. Using this can display a different sort order of events
+    /// as the sync event does replace but not relocate the pending event.
+    bool displayPendingEvent = true,
   }) async {
     txid ??= client.generateUniqueTransactionId();
     sendingFilePlaceholders[txid] = file;
@@ -924,6 +1048,7 @@ class Room {
       editEventId: editEventId,
       threadRootEventId: threadRootEventId,
       threadLastEventId: threadLastEventId,
+      displayPendingEvent: displayPendingEvent,
     );
     sendingFilePlaceholders.remove(txid);
     sendingFileThumbnails.remove(txid);
@@ -1008,6 +1133,12 @@ class Room {
     String? editEventId,
     String? threadRootEventId,
     String? threadLastEventId,
+
+    /// Displays an event in the timeline with the transaction ID as the event
+    /// ID and a status of SENDING, SENT or ERROR until it gets replaced by
+    /// the sync event. Using this can display a different sort order of events
+    /// as the sync event does replace but not relocate the pending event.
+    bool displayPendingEvent = true,
   }) async {
     // Create new transaction id
     final String messageID;
@@ -1112,7 +1243,7 @@ class Room {
     // we need to add the transaction ID to the set of events that are currently queued to be sent
     // even before the fake sync is called, so that the event constructor can check if the event is in the sending state
     sendingQueueEventsByTxId.add(messageID);
-    await _handleFakeSync(syncUpdate);
+    if (displayPendingEvent) await _handleFakeSync(syncUpdate);
     final completer = Completer();
     sendingQueue.add(completer);
     while (sendingQueue.first != completer) {
@@ -1146,7 +1277,7 @@ class Room {
           Logs().w('Problem while sending message', e, s);
           syncUpdate.rooms!.join!.values.first.timeline!.events!.first
               .unsigned![messageSendingStatusKey] = EventStatus.error.intValue;
-          await _handleFakeSync(syncUpdate);
+          if (displayPendingEvent) await _handleFakeSync(syncUpdate);
           completer.complete();
           sendingQueue.remove(completer);
           sendingQueueEventsByTxId.remove(messageID);
@@ -1165,7 +1296,7 @@ class Room {
     syncUpdate.rooms!.join!.values.first.timeline!.events!.first
         .unsigned![messageSendingStatusKey] = EventStatus.sent.intValue;
     syncUpdate.rooms!.join!.values.first.timeline!.events!.first.eventId = res;
-    await _handleFakeSync(syncUpdate);
+    if (displayPendingEvent) await _handleFakeSync(syncUpdate);
     completer.complete();
     sendingQueue.remove(completer);
     sendingQueueEventsByTxId.remove(messageID);
@@ -1991,12 +2122,15 @@ class Room {
     return (powerLevelState is Map<String, int>) ? powerLevelState : null;
   }
 
-  /// Uploads a new user avatar for this room. Returns the event ID of the new
-  /// m.room.avatar event. Leave empty to remove the current avatar.
+  /// Uploads a new avatar for this room. Returns the event ID of the new
+  /// m.room.avatar event. Insert null to remove the current avatar.
   Future<String> setAvatar(MatrixFile? file) async {
     final uploadResp = file == null
         ? null
-        : await client.uploadContent(file.bytes, filename: file.name);
+        : await client.uploadContent(
+            file.bytes,
+            filename: file.name,
+          );
     return await client.setRoomStateWithKey(
       id,
       EventTypes.RoomAvatar,

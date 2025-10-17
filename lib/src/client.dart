@@ -1268,12 +1268,16 @@ class Client extends MatrixApi {
   final _versionsCache =
       AsyncCache<GetVersionsResponse>(const Duration(hours: 1));
 
+  Future<GetVersionsResponse> get versionsResponse =>
+      _versionsCache.tryFetch(() => getVersions());
+
   Future<bool> authenticatedMediaSupported() async {
-    final versionsResponse = await _versionsCache.tryFetch(() => getVersions());
-    return versionsResponse.versions.any(
-          (v) => isVersionGreaterThanOrEqualTo(v, 'v1.11'),
-        ) ||
-        versionsResponse.unstableFeatures?['org.matrix.msc3916.stable'] == true;
+    return (await versionsResponse).versions.any(
+              (v) => isVersionGreaterThanOrEqualTo(v, 'v1.11'),
+            ) ||
+        (await versionsResponse)
+                .unstableFeatures?['org.matrix.msc3916.stable'] ==
+            true;
   }
 
   final _serverConfigCache = AsyncCache<MediaConfig>(const Duration(hours: 1));
@@ -1610,14 +1614,23 @@ class Client extends MatrixApi {
       // We send an empty String to remove the avatar. Sending Null **should**
       // work but it doesn't with Synapse. See:
       // https://gitlab.com/famedly/company/frontend/famedlysdk/-/issues/254
-      return setAvatarUrl(userID!, Uri.parse(''));
+      await setProfileField(
+        userID!,
+        'avatar_url',
+        {'avatar_url': ''},
+      );
+      return;
     }
     final uploadResp = await uploadContent(
       file.bytes,
       filename: file.name,
       contentType: file.mimeType,
     );
-    await setAvatarUrl(userID!, uploadResp);
+    await setProfileField(
+      userID!,
+      'avatar_url',
+      {'avatar_url': uploadResp.toString()},
+    );
     return;
   }
 
@@ -2631,13 +2644,15 @@ class Client extends MatrixApi {
       final id = entry.key;
       final syncRoomUpdate = entry.value;
 
+      final room = await _updateRoomsByRoomUpdate(id, syncRoomUpdate);
+
       // Is the timeline limited? Then all previous messages should be
       // removed from the database!
       if (syncRoomUpdate is JoinedRoomUpdate &&
           syncRoomUpdate.timeline?.limited == true) {
         await database.deleteTimelineForRoom(id);
+        room.lastEvent = null;
       }
-      final room = await _updateRoomsByRoomUpdate(id, syncRoomUpdate);
 
       final timelineUpdateType = direction != null
           ? (direction == Direction.b
@@ -2737,6 +2752,24 @@ class Client extends MatrixApi {
         Logs().d('Skip store LeftRoomUpdate for unknown room', id);
         continue;
       }
+
+      if (syncRoomUpdate is JoinedRoomUpdate &&
+          (room.lastEvent?.type == EventTypes.refreshingLastEvent ||
+              (syncRoomUpdate.timeline?.limited == true &&
+                  room.lastEvent == null))) {
+        room.lastEvent = Event(
+          originServerTs:
+              syncRoomUpdate.timeline?.events?.firstOrNull?.originServerTs ??
+                  DateTime.now(),
+          type: EventTypes.refreshingLastEvent,
+          content: {'body': 'Refreshing last event...'},
+          room: room,
+          eventId: generateUniqueTransactionId(),
+          senderId: userID!,
+        );
+        runInRoot(room.refreshLastEvent);
+      }
+
       await database.storeRoomUpdate(id, syncRoomUpdate, room.lastEvent, this);
     }
   }
@@ -2978,10 +3011,13 @@ class Client extends MatrixApi {
         rooms[roomIndex].prev_batch = chatUpdate.timeline?.prevBatch;
       }
       rooms[roomIndex].membership = membership;
-      rooms[roomIndex].notificationCount =
-          chatUpdate.unreadNotifications?.notificationCount ?? 0;
-      rooms[roomIndex].highlightCount =
-          chatUpdate.unreadNotifications?.highlightCount ?? 0;
+
+      if (chatUpdate.unreadNotifications != null) {
+        rooms[roomIndex].notificationCount =
+            chatUpdate.unreadNotifications?.notificationCount ?? 0;
+        rooms[roomIndex].highlightCount =
+            chatUpdate.unreadNotifications?.highlightCount ?? 0;
+      }
 
       final summary = chatUpdate.summary;
       if (summary != null) {
@@ -3030,13 +3066,6 @@ class Client extends MatrixApi {
           room.setState(event);
         }
         if (type != EventUpdateType.timeline) break;
-
-        // If last event is null or not a valid room preview event anyway,
-        // just use this:
-        if (room.lastEvent == null) {
-          room.lastEvent = event;
-          break;
-        }
 
         // Is this event redacting the last event?
         if (event.type == EventTypes.Redaction &&
@@ -3754,10 +3783,30 @@ class Client extends MatrixApi {
 
   /// Ignore another user. This will clear the local cached messages to
   /// hide all previous messages from this user.
-  Future<void> ignoreUser(String userId) async {
+  Future<void> ignoreUser(
+    String userId, {
+    /// Whether to also decline all invites and leave DM rooms with this user.
+    bool leaveRooms = true,
+  }) async {
     if (!userId.isValidMatrixId) {
       throw Exception('$userId is not a valid mxid!');
     }
+
+    if (leaveRooms) {
+      for (final room in rooms) {
+        final isInviteFromUser = room.membership == Membership.invite &&
+            room.getState(EventTypes.RoomMember, userID!)?.senderId == userId;
+
+        if (room.directChatMatrixID == userId || isInviteFromUser) {
+          try {
+            await room.leave();
+          } catch (e, s) {
+            Logs().w('Unable to leave room with blocked user $userId', e, s);
+          }
+        }
+      }
+    }
+
     await setAccountData(userID!, 'm.ignored_user_list', {
       'ignored_users': Map.fromEntries(
         (ignoredUsers..add(userId)).map((key) => MapEntry(key, {})),
@@ -3992,6 +4041,59 @@ class Client extends MatrixApi {
       waitUntilLoadCompletedLoaded: false,
       onInitStateChanged: onInitStateChanged,
     );
+  }
+
+  /// Strips all information out of an event which isn't critical to the
+  /// integrity of the server-side representation of the room.
+  ///
+  /// This cannot be undone.
+  ///
+  /// Any user with a power level greater than or equal to the `m.room.redaction`
+  /// event power level may send redaction events in the room. If the user's power
+  /// level is also greater than or equal to the `redact` power level of the room,
+  /// the user may redact events sent by other users.
+  ///
+  /// Server administrators may redact events sent by users on their server.
+  ///
+  /// [roomId] The room from which to redact the event.
+  ///
+  /// [eventId] The ID of the event to redact
+  ///
+  /// [txnId] The [transaction ID](https://spec.matrix.org/unstable/client-server-api/#transaction-identifiers) for this event. Clients should generate a
+  /// unique ID; it will be used by the server to ensure idempotency of requests.
+  ///
+  /// [reason] The reason for the event being redacted.
+  ///
+  /// [metadata] is a map which will be expanded and sent along the reason field
+  ///
+  /// returns `event_id`:
+  /// A unique identifier for the event.
+  Future<String?> redactEventWithMetadata(
+    String roomId,
+    String eventId,
+    String txnId, {
+    String? reason,
+    Map<String, Object?>? metadata,
+  }) async {
+    final requestUri = Uri(
+      path:
+          '_matrix/client/v3/rooms/${Uri.encodeComponent(roomId)}/redact/${Uri.encodeComponent(eventId)}/${Uri.encodeComponent(txnId)}',
+    );
+    final request = http.Request('PUT', baseUri!.resolveUri(requestUri));
+    request.headers['authorization'] = 'Bearer ${bearerToken!}';
+    request.headers['content-type'] = 'application/json';
+    request.bodyBytes = utf8.encode(
+      jsonEncode({
+        if (reason != null) 'reason': reason,
+        if (metadata != null) ...metadata,
+      }),
+    );
+    final response = await httpClient.send(request);
+    final responseBody = await response.stream.toBytes();
+    if (response.statusCode != 200) unexpectedResponse(response, responseBody);
+    final responseString = utf8.decode(responseBody);
+    final json = jsonDecode(responseString);
+    return ((v) => v != null ? v as String : null)(json['event_id']);
   }
 }
 

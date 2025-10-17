@@ -84,6 +84,44 @@ class CallSession {
 
   bool get answeredByUs => _answeredByUs;
 
+  /// Queue of streams that need to be added when peer connection becomes ready
+  final List<WrappedMediaStream> _pendingStreams = [];
+
+  /// Check if the peer connection is ready for track operations
+  bool get _isPeerConnectionReadyForTracks {
+    if (pc == null) return false;
+    if (callHasEnded) return false;
+
+    // Check if peer connection is in a valid state for adding tracks
+    final state = pc!.signalingState;
+    return state == RTCSignalingState.RTCSignalingStateStable ||
+        state == RTCSignalingState.RTCSignalingStateHaveLocalOffer ||
+        state == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
+        state == RTCSignalingState.RTCSignalingStateHaveLocalPrAnswer ||
+        state == RTCSignalingState.RTCSignalingStateHaveRemotePrAnswer;
+  }
+
+  /// Process pending streams when peer connection becomes ready
+  Future<void> _processPendingStreams() async {
+    if (!_isPeerConnectionReadyForTracks || _pendingStreams.isEmpty) return;
+
+    Logs().v('[VOIP] Processing ${_pendingStreams.length} pending streams');
+    final streamsToProcess = List<WrappedMediaStream>.from(_pendingStreams);
+    _pendingStreams.clear();
+
+    for (final stream in streamsToProcess) {
+      try {
+        await addLocalStream(
+          stream.stream!,
+          stream.purpose,
+          addToPeerConnection: true,
+        );
+      } catch (e, s) {
+        Logs().e('[VOIP] Failed to process pending stream', e, s);
+      }
+    }
+  }
+
   Client get client => opts.room.client;
 
   /// The local participant in the call, with id userId + deviceId
@@ -403,9 +441,23 @@ class CallSession {
 
     if (direction == CallDirection.kOutgoing) {
       setCallState(CallState.kConnecting);
-      await pc!.setRemoteDescription(answer);
-      for (final candidate in _remoteCandidates) {
-        await pc!.addCandidate(candidate);
+      try {
+        await pc!.setRemoteDescription(answer);
+        for (final candidate in _remoteCandidates) {
+          await pc!.addCandidate(candidate);
+        }
+      } catch (e, s) {
+        Logs().e(
+          '[VOIP] Failed to set remote description in onAnswerReceived',
+          e,
+          s,
+        );
+        await terminate(
+          CallParty.kLocal,
+          CallErrorCode.setRemoteDescription,
+          true,
+        );
+        return;
       }
     }
     if (remotePartyId != null) {
@@ -423,6 +475,12 @@ class CallSession {
     SDPStreamMetadata? metadata,
     RTCSessionDescription description,
   ) async {
+    // Prevent multiple simultaneous negotiations
+    if (_makingOffer) {
+      Logs().w('[VOIP] Ignoring negotiate event - already making an offer');
+      return;
+    }
+
     final polite = direction == CallDirection.kIncoming;
 
     // Here we follow the perfect negotiation logic from
@@ -444,6 +502,38 @@ class CallSession {
     }
 
     try {
+      // Check if we can safely set the remote description
+      final currentState = pc!.signalingState;
+      Logs().v(
+        '[VOIP] Current signaling state: $currentState, description type: ${description.type}',
+      );
+
+      // If we're impolite and there's an offer collision, rollback first
+      if (!polite && offerCollision && description.type == 'offer') {
+        Logs()
+            .v('[VOIP] Rolling back local description due to offer collision');
+        try {
+          await pc!.setLocalDescription(RTCSessionDescription('', 'rollback'));
+        } catch (rollbackError) {
+          Logs().w('[VOIP] Rollback failed, continuing anyway: $rollbackError');
+        }
+      }
+
+      // Additional safety check for the specific error case
+      if (description.type == 'offer' &&
+          currentState == RTCSignalingState.RTCSignalingStateHaveLocalOffer) {
+        Logs().w(
+          '[VOIP] Attempting to set remote offer when already have local offer - this may cause issues',
+        );
+        // Try rollback first
+        try {
+          await pc!.setLocalDescription(RTCSessionDescription('', 'rollback'));
+          Logs().v('[VOIP] Successfully rolled back local offer');
+        } catch (rollbackError) {
+          Logs().w('[VOIP] Rollback failed: $rollbackError');
+        }
+      }
+
       await pc!.setRemoteDescription(description);
       RTCSessionDescription? answer;
       if (description.type == 'offer') {
@@ -640,18 +730,44 @@ class CallSession {
       onStreamAdd.add(newStream);
     }
 
-    if (addToPeerConnection) {
-      if (purpose == SDPStreamMetadataPurpose.Screenshare) {
-        _screensharingSenders.clear();
-        for (final track in stream.getTracks()) {
-          _screensharingSenders.add(await pc!.addTrack(track, stream));
+    if (addToPeerConnection && _isPeerConnectionReadyForTracks) {
+      try {
+        if (purpose == SDPStreamMetadataPurpose.Screenshare) {
+          _screensharingSenders.clear();
+          for (final track in stream.getTracks()) {
+            Logs().v('[VOIP] Adding screenshare track: ${track.kind}');
+            _screensharingSenders.add(await pc!.addTrack(track, stream));
+          }
+        } else if (purpose == SDPStreamMetadataPurpose.Usermedia) {
+          _usermediaSenders.clear();
+          for (final track in stream.getTracks()) {
+            Logs().v('[VOIP] Adding usermedia track: ${track.kind}');
+            _usermediaSenders.add(await pc!.addTrack(track, stream));
+          }
         }
-      } else if (purpose == SDPStreamMetadataPurpose.Usermedia) {
-        _usermediaSenders.clear();
-        for (final track in stream.getTracks()) {
-          _usermediaSenders.add(await pc!.addTrack(track, stream));
-        }
+      } catch (e, s) {
+        Logs().e('[VOIP] Failed to add track to peer connection', e, s);
+        // Don't rethrow here as it might be a recoverable error
+        // The call can continue without this specific track
       }
+    } else if (addToPeerConnection && !_isPeerConnectionReadyForTracks) {
+      Logs().w(
+        '[VOIP] Peer connection not ready for track operations, queuing stream for later',
+      );
+      // Queue the stream to be processed when peer connection becomes ready
+      final wrappedStream = WrappedMediaStream(
+        participant: localParticipant!,
+        room: opts.room,
+        stream: stream,
+        purpose: purpose,
+        client: client,
+        audioMuted: stream.getAudioTracks().isEmpty,
+        videoMuted: stream.getVideoTracks().isEmpty,
+        isGroupCall: groupCallId != null,
+        pc: pc,
+        voip: voip,
+      );
+      _pendingStreams.add(wrappedStream);
     }
 
     if (purpose == SDPStreamMetadataPurpose.Usermedia) {
@@ -831,7 +947,19 @@ class CallSession {
           } else {
             // adding transceiver
             Logs().d('[VOIP] adding track $newTrack to pc');
-            await pc!.addTrack(newTrack, localUserMediaStream!.stream!);
+            if (_isPeerConnectionReadyForTracks) {
+              try {
+                await pc!.addTrack(newTrack, localUserMediaStream!.stream!);
+              } catch (e, s) {
+                Logs()
+                    .e('[VOIP] Failed to add track during video upgrade', e, s);
+                // Continue without this track
+              }
+            } else {
+              Logs().w(
+                '[VOIP] Peer connection not ready for track operations during video upgrade',
+              );
+            }
           }
         }
         // for renderer to be able to show new video track
@@ -1140,6 +1268,9 @@ class CallSession {
     Logs().d('Negotiation is needed!');
     _makingOffer = true;
     try {
+      // Process any pending streams before creating offer
+      await _processPendingStreams();
+
       // The first addTrack(audio track) on iOS will trigger
       // onNegotiationNeeded, which causes creatOffer to only include
       // audio m-line, add delay and wait for video track to be added,
@@ -1161,6 +1292,9 @@ class CallSession {
     try {
       pc = await _createPeerConnection();
       pc!.onRenegotiationNeeded = onNegotiationNeeded;
+
+      // Process any pending streams now that peer connection is ready
+      await _processPendingStreams();
 
       pc!.onIceCandidate = (RTCIceCandidate candidate) async {
         if (callHasEnded) return;

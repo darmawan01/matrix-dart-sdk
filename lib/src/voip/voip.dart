@@ -3,15 +3,14 @@ import 'dart:convert';
 import 'dart:core';
 
 import 'package:collection/collection.dart';
-import 'package:sdp_transform/sdp_transform.dart' as sdp_transform;
-import 'package:webrtc_interface/webrtc_interface.dart';
-
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/utils/cached_stream_controller.dart';
 import 'package:matrix/src/utils/crypto/crypto.dart';
 import 'package:matrix/src/voip/models/call_options.dart';
 import 'package:matrix/src/voip/models/voip_id.dart';
 import 'package:matrix/src/voip/utils/stream_helper.dart';
+import 'package:sdp_transform/sdp_transform.dart' as sdp_transform;
+import 'package:webrtc_interface/webrtc_interface.dart';
 
 /// The parent highlevel voip class, this trnslates matrix events to webrtc methods via
 /// `CallSession` or `GroupCallSession` methods
@@ -107,12 +106,13 @@ class VoIP {
     });
 
     // handles the com.famedly.call events.
-    client.onRoomState.stream.listen(
-      (update) async {
-        final event = update.state;
-        if (event is! Event) return;
+    client.onTimelineEvent.stream.listen(
+      (event) async {
         if (event.room.membership != Membership.join) return;
         if (event.type != EventTypes.GroupCallMember) return;
+
+        // Add a small delay to ensure room state is properly updated
+        await Future.delayed(Duration(milliseconds: 100));
 
         final mems = event.room.getCallMembershipsFromEvent(event, this);
         for (final mem in mems) {
@@ -1056,7 +1056,14 @@ class VoIP {
     await room.postLoad();
 
     if (!room.groupCallsEnabledForEveryone) {
-      await room.enableGroupCalls();
+      try {
+        await room.enableGroupCalls();
+      } catch (e, s) {
+        Logs().e('[VOIP] Failed to enable group calls', e, s);
+        throw MatrixSDKVoipException(
+          'Failed to enable group calls in room ${room.id}: $e',
+        );
+      }
     }
 
     if (!room.canJoinGroupCall) {
@@ -1085,6 +1092,10 @@ class VoIP {
     if (preShareKey) {
       await groupCall.backend.preShareKey(groupCall);
     }
+
+    // Ensure we process any existing memberships for this group call
+    // This handles the case where the group call already exists with participants
+    await groupCall.onMemberStateChanged();
 
     return groupCall;
   }

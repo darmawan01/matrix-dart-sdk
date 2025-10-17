@@ -966,9 +966,39 @@ class MeshBackend extends CallBackend {
 
     // Only initiate a call with a participant who has a id that is lexicographically
     // less than your own. Otherwise, that user will call you.
-    if (groupCall.localParticipant!.id.compareTo(rp.id) > 0) {
+    // Use a more robust comparison that handles edge cases
+    final localId = groupCall.localParticipant!.id;
+    final remoteId = rp.id;
+
+    Logs().v(
+      '[VOIP] Lexicographical comparison: localId="$localId" vs remoteId="$remoteId"',
+    );
+
+    if (localId.compareTo(remoteId) > 0) {
       Logs().i('[VOIP] Waiting for ${rp.id} to send call invite.');
       return;
+    } else if (localId.compareTo(remoteId) == 0) {
+      Logs().w(
+        '[VOIP] Same participant ID detected: $localId - this should not happen in group calls',
+      );
+      // Fallback: Use session ID for comparison if participant IDs are the same
+      final localSessionId = groupCall.voip.currentSessionId;
+      final remoteSessionId = mem.membershipId;
+      Logs().v(
+        '[VOIP] Fallback comparison using session IDs: localSessionId="$localSessionId" vs remoteSessionId="$remoteSessionId"',
+      );
+
+      if (localSessionId.compareTo(remoteSessionId) > 0) {
+        Logs().i(
+          '[VOIP] Waiting for ${rp.id} to send call invite (fallback comparison).',
+        );
+        return;
+      } else if (localSessionId.compareTo(remoteSessionId) == 0) {
+        Logs().w(
+          '[VOIP] Same session ID detected: $localSessionId - skipping call setup',
+        );
+        return;
+      }
     }
 
     final opts = CallOptions(

@@ -16,6 +16,13 @@ extension FamedlyCallMemberEventsExtension on Room {
     final famedlyCallMemberStates =
         states.tryGetMap<String, Event>(EventTypes.GroupCallMember);
 
+    Logs().v(
+      '[VOIP] Room states for GroupCallMember: ${famedlyCallMemberStates?.keys.toList() ?? 'null'}',
+    );
+    Logs().v(
+      '[VOIP] Room partial: $partial, states keys: ${states.keys.toList()}',
+    );
+
     if (famedlyCallMemberStates == null) return {};
     final sortedEvents = famedlyCallMemberStates.values
         .sorted((a, b) => a.originServerTs.compareTo(b.originServerTs));

@@ -128,29 +128,40 @@ class GroupCallSession {
       throw MatrixSDKVoipException('Cannot enter call in the $state state');
     }
 
-    if (state == GroupCallState.localCallFeedUninitialized) {
-      await backend.initLocalStream(this, stream: stream);
+    try {
+      if (state == GroupCallState.localCallFeedUninitialized) {
+        await backend.initLocalStream(this, stream: stream);
+      }
+
+      await sendMemberStateEvent();
+
+      setState(GroupCallState.entered);
+
+      Logs().v('Entered group call $groupCallId');
+
+      // Set up _participants for the members currently in the call.
+      // Other members will be picked up by the RoomState.members event.
+      await onMemberStateChanged();
+
+      await backend.setupP2PCallsWithExistingMembers(this);
+
+      voip.currentGroupCID = VoipId(roomId: room.id, callId: groupCallId);
+
+      await voip.delegate.handleNewGroupCall(this);
+
+      // Log successful entry with participant count
+      Logs().i(
+        '[VOIP] Successfully entered group call $groupCallId with ${_participants.length} participants',
+      );
+
+      _reactionsTimer = Timer.periodic(Duration(seconds: 1), (_) {
+        if (_reactionsTicker > 0) _reactionsTicker--;
+      });
+    } catch (e, s) {
+      Logs().e('[VOIP] Failed to enter group call', e, s);
+      setState(GroupCallState.localCallFeedUninitialized);
+      rethrow;
     }
-
-    await sendMemberStateEvent();
-
-    setState(GroupCallState.entered);
-
-    Logs().v('Entered group call $groupCallId');
-
-    // Set up _participants for the members currently in the call.
-    // Other members will be picked up by the RoomState.members event.
-    await onMemberStateChanged();
-
-    await backend.setupP2PCallsWithExistingMembers(this);
-
-    voip.currentGroupCID = VoipId(roomId: room.id, callId: groupCallId);
-
-    await voip.delegate.handleNewGroupCall(this);
-
-    _reactionsTimer = Timer.periodic(Duration(seconds: 1), (_) {
-      if (_reactionsTicker > 0) _reactionsTicker--;
-    });
   }
 
   Future<void> leave() async {
@@ -167,56 +178,65 @@ class GroupCallSession {
   }
 
   Future<void> sendMemberStateEvent() async {
-    // Get current member event ID to preserve permanent reactions
-    final currentMemberships = room.getCallMembershipsForUser(
-      client.userID!,
-      client.deviceID!,
-      voip,
-    );
-
-    final currentMembership = currentMemberships.firstWhereOrNull(
-      (m) =>
-          m.callId == groupCallId &&
-          m.deviceId == client.deviceID! &&
-          m.application == application &&
-          m.scope == scope &&
-          m.roomId == room.id,
-    );
-
-    // Store permanent reactions from the current member event if it exists
-    List<MatrixEvent> permanentReactions = [];
-    final membershipExpired = currentMembership?.isExpired ?? false;
-
-    if (currentMembership?.eventId != null && !membershipExpired) {
-      permanentReactions = await _getPermanentReactionsForEvent(
-        currentMembership!.eventId!,
-      );
+    if (client.userID == null || client.deviceID == null) {
+      throw MatrixSDKVoipException('Client userID or deviceID is null');
     }
 
-    final newEventId = await room.updateFamedlyCallMemberStateEvent(
-      CallMembership(
-        userId: client.userID!,
-        roomId: room.id,
-        callId: groupCallId,
-        application: application,
-        scope: scope,
-        backend: backend,
-        deviceId: client.deviceID!,
-        expiresTs: DateTime.now()
-            .add(voip.timeouts!.expireTsBumpDuration)
-            .millisecondsSinceEpoch,
-        membershipId: voip.currentSessionId,
-        feeds: backend.getCurrentFeeds(),
-        voip: voip,
-      ),
-    );
-
-    // Copy permanent reactions to the new member event
-    if (permanentReactions.isNotEmpty && newEventId != null) {
-      await _copyPermanentReactionsToNewEvent(
-        permanentReactions,
-        newEventId,
+    try {
+      // Get current member event ID to preserve permanent reactions
+      final currentMemberships = room.getCallMembershipsForUser(
+        client.userID!,
+        client.deviceID!,
+        voip,
       );
+
+      final currentMembership = currentMemberships.firstWhereOrNull(
+        (m) =>
+            m.callId == groupCallId &&
+            m.deviceId == client.deviceID! &&
+            m.application == application &&
+            m.scope == scope &&
+            m.roomId == room.id,
+      );
+
+      // Store permanent reactions from the current member event if it exists
+      List<MatrixEvent> permanentReactions = [];
+      final membershipExpired = currentMembership?.isExpired ?? false;
+
+      if (currentMembership?.eventId != null && !membershipExpired) {
+        permanentReactions = await _getPermanentReactionsForEvent(
+          currentMembership!.eventId!,
+        );
+      }
+
+      final newEventId = await room.updateFamedlyCallMemberStateEvent(
+        CallMembership(
+          userId: client.userID!,
+          roomId: room.id,
+          callId: groupCallId,
+          application: application,
+          scope: scope,
+          backend: backend,
+          deviceId: client.deviceID!,
+          expiresTs: DateTime.now()
+              .add(voip.timeouts!.expireTsBumpDuration)
+              .millisecondsSinceEpoch,
+          membershipId: voip.currentSessionId,
+          feeds: backend.getCurrentFeeds(),
+          voip: voip,
+        ),
+      );
+
+      // Copy permanent reactions to the new member event
+      if (permanentReactions.isNotEmpty && newEventId != null) {
+        await _copyPermanentReactionsToNewEvent(
+          permanentReactions,
+          newEventId,
+        );
+      }
+    } catch (e, s) {
+      Logs().e('[VOIP] Failed to send member state event', e, s);
+      rethrow;
     }
 
     if (_resendMemberStateEventTimer != null) {
@@ -226,12 +246,12 @@ class GroupCallSession {
       voip.timeouts!.updateExpireTsTimerDuration,
       ((timer) async {
         Logs().d('sendMemberStateEvent updating member event with timer');
-        if (state != GroupCallState.ended ||
+        if (state != GroupCallState.ended &&
             state != GroupCallState.localCallFeedUninitialized) {
           await sendMemberStateEvent();
         } else {
           Logs().d(
-            '[VOIP] deteceted groupCall in state $state, removing state event',
+            '[VOIP] detected groupCall in state $state, removing state event',
           );
           await removeMemberStateEvent();
         }
@@ -253,73 +273,169 @@ class GroupCallSession {
     );
   }
 
-  /// compltetely rebuilds the local _participants list
+  /// completely rebuilds the local _participants list
   Future<void> onMemberStateChanged() async {
-    // The member events may be received for another room, which we will ignore.
-    final mems = room
-        .getCallMembershipsFromRoom(voip)
-        .values
-        .expand((element) => element);
-    final memsForCurrentGroupCall = mems.where((element) {
-      return element.callId == groupCallId &&
-          !element.isExpired &&
-          element.application == application &&
-          element.scope == scope &&
-          element.roomId == room.id; // sanity checks
-    }).toList();
+    try {
+      // Ensure room is fully loaded before processing member state changes
+      await room.postLoad();
 
-    final Set<CallParticipant> newP = {};
+      // The member events may be received for another room, which we will ignore.
+      final mems = room
+          .getCallMembershipsFromRoom(voip)
+          .values
+          .expand((element) => element);
 
-    for (final mem in memsForCurrentGroupCall) {
-      final rp = CallParticipant(
-        voip,
-        userId: mem.userId,
-        deviceId: mem.deviceId,
+      Logs().v(
+        '[VOIP] All memberships found: ${mems.map((m) => '${m.userId}:${m.deviceId} (callId: ${m.callId}, expired: ${m.isExpired})').toList()}',
       );
 
-      newP.add(rp);
+      final memsForCurrentGroupCall = mems.where((element) {
+        final matches = element.callId == groupCallId &&
+            !element.isExpired &&
+            element.application == application &&
+            element.scope == scope &&
+            element.roomId == room.id; // sanity checks
 
-      if (rp.isLocal) continue;
+        Logs().v(
+          '[VOIP] Membership check: ${element.userId}:${element.deviceId} - callId: ${element.callId} (expected: $groupCallId), expired: ${element.isExpired}, app: ${element.application} (expected: $application), scope: ${element.scope} (expected: $scope), roomId: ${element.roomId} (expected: ${room.id}), matches: $matches',
+        );
 
-      if (state != GroupCallState.entered) continue;
-
-      await backend.setupP2PCallWithNewMember(this, rp, mem);
-    }
-    final newPcopy = Set<CallParticipant>.from(newP);
-    final oldPcopy = Set<CallParticipant>.from(_participants);
-    final anyJoined = newPcopy.difference(oldPcopy);
-    final anyLeft = oldPcopy.difference(newPcopy);
-
-    if (anyJoined.isNotEmpty || anyLeft.isNotEmpty) {
-      if (anyJoined.isNotEmpty) {
-        final nonLocalAnyJoined = Set<CallParticipant>.from(anyJoined)
-          ..remove(localParticipant);
-        if (nonLocalAnyJoined.isNotEmpty && state == GroupCallState.entered) {
+        if (!matches) {
           Logs().v(
-            'nonLocalAnyJoined: ${nonLocalAnyJoined.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId',
+            '[VOIP] Membership filtered out: ${element.userId}:${element.deviceId} (callId: ${element.callId}, expired: ${element.isExpired}, app: ${element.application}, scope: ${element.scope}, roomId: ${element.roomId})',
           );
-          await backend.onNewParticipant(this, nonLocalAnyJoined.toList());
         }
-        _participants.addAll(anyJoined);
-        matrixRTCEventStream
-            .add(ParticipantsJoinEvent(participants: anyJoined.toList()));
-      }
-      if (anyLeft.isNotEmpty) {
-        final nonLocalAnyLeft = Set<CallParticipant>.from(anyLeft)
-          ..remove(localParticipant);
-        if (nonLocalAnyLeft.isNotEmpty && state == GroupCallState.entered) {
-          Logs().v(
-            'nonLocalAnyLeft: ${nonLocalAnyLeft.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId',
-          );
-          await backend.onLeftParticipant(this, nonLocalAnyLeft.toList());
-        }
-        _participants.removeAll(anyLeft);
-        matrixRTCEventStream
-            .add(ParticipantsLeftEvent(participants: anyLeft.toList()));
+
+        return matches;
+      }).toList();
+
+      Logs().v(
+        '[VOIP] Memberships for current group call: ${memsForCurrentGroupCall.map((m) => '${m.userId}:${m.deviceId}').toList()}',
+      );
+
+      // Debug: Check current participants
+      Logs().v(
+        '[VOIP] Current participants: ${_participants.map((p) => p.id).toList()}',
+      );
+
+      final Set<CallParticipant> newP = {};
+
+      // Always include the local participant if it exists
+      if (localParticipant != null) {
+        newP.add(localParticipant!);
+        Logs().v(
+          '[VOIP] Added local participant: ${localParticipant!.id}',
+        );
       }
 
-      // ignore: deprecated_member_use_from_same_package
-      onGroupCallEvent.add(GroupCallStateChange.participantsChanged);
+      for (final mem in memsForCurrentGroupCall) {
+        final rp = CallParticipant(
+          voip,
+          userId: mem.userId,
+          deviceId: mem.deviceId,
+        );
+
+        Logs().v(
+          '[VOIP] Processing member: userId=${mem.userId}, deviceId=${mem.deviceId}, participantId=${rp.id}, isLocal=${rp.isLocal}',
+        );
+
+        // Always add the participant to the set
+        newP.add(rp);
+
+        // Skip local participant setup as it's handled in enter()
+        if (rp.isLocal) continue;
+
+        if (state != GroupCallState.entered) continue;
+
+        try {
+          await backend.setupP2PCallWithNewMember(this, rp, mem);
+        } catch (e, s) {
+          Logs().e(
+            '[VOIP] Failed to setup P2P call with new member ${rp.id}',
+            e,
+            s,
+          );
+          // Continue with other members even if one fails
+        }
+      }
+      final newPcopy = Set<CallParticipant>.from(newP);
+      final oldPcopy = Set<CallParticipant>.from(_participants);
+      final anyJoined = newPcopy.difference(oldPcopy);
+      final anyLeft = oldPcopy.difference(newPcopy);
+
+      Logs().v(
+        '[VOIP] Participant comparison: oldParticipants=${oldPcopy.map((p) => p.id).toList()}, newParticipants=${newPcopy.map((p) => p.id).toList()}',
+      );
+
+      if (anyJoined.isNotEmpty || anyLeft.isNotEmpty) {
+        Logs().v(
+          '[VOIP] Participant changes detected: anyJoined=${anyJoined.map((e) => e.id).toList()}, anyLeft=${anyLeft.map((e) => e.id).toList()}',
+        );
+
+        if (anyJoined.isNotEmpty) {
+          final nonLocalAnyJoined = Set<CallParticipant>.from(anyJoined)
+            ..remove(localParticipant);
+          if (nonLocalAnyJoined.isNotEmpty && state == GroupCallState.entered) {
+            Logs().v(
+              'nonLocalAnyJoined: ${nonLocalAnyJoined.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId',
+            );
+            try {
+              await backend.onNewParticipant(this, nonLocalAnyJoined.toList());
+            } catch (e, s) {
+              Logs().e('[VOIP] Failed to handle new participant', e, s);
+            }
+          }
+          _participants.addAll(anyJoined);
+          matrixRTCEventStream
+              .add(ParticipantsJoinEvent(participants: anyJoined.toList()));
+        }
+        if (anyLeft.isNotEmpty) {
+          // Filter out participants that might be false positives
+          // (e.g., due to timing issues with room state event processing)
+          final confirmedLeft = <CallParticipant>[];
+          for (final participant in anyLeft) {
+            // Check if this participant is actually still in the room memberships
+            final stillInMemberships = memsForCurrentGroupCall.any(
+              (mem) =>
+                  mem.userId == participant.userId &&
+                  mem.deviceId == participant.deviceId,
+            );
+
+            if (!stillInMemberships) {
+              confirmedLeft.add(participant);
+              Logs().v('[VOIP] Confirmed participant left: ${participant.id}');
+            } else {
+              Logs().v(
+                '[VOIP] False positive left detection for: ${participant.id} - still in memberships',
+              );
+            }
+          }
+
+          if (confirmedLeft.isNotEmpty) {
+            final nonLocalAnyLeft = Set<CallParticipant>.from(confirmedLeft)
+              ..remove(localParticipant);
+            if (nonLocalAnyLeft.isNotEmpty && state == GroupCallState.entered) {
+              Logs().v(
+                'nonLocalAnyLeft: ${nonLocalAnyLeft.map((e) => e.id).toString()} roomId: ${room.id} groupCallId: $groupCallId',
+              );
+              try {
+                await backend.onLeftParticipant(this, nonLocalAnyLeft.toList());
+              } catch (e, s) {
+                Logs().e('[VOIP] Failed to handle left participant', e, s);
+              }
+            }
+            _participants.removeAll(confirmedLeft);
+            matrixRTCEventStream
+                .add(ParticipantsLeftEvent(participants: confirmedLeft));
+          }
+        }
+
+        // ignore: deprecated_member_use_from_same_package
+        onGroupCallEvent.add(GroupCallStateChange.participantsChanged);
+      }
+    } catch (e, s) {
+      Logs().e('[VOIP] Failed to process member state changes', e, s);
+      rethrow;
     }
   }
 

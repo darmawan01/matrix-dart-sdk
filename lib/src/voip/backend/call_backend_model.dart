@@ -108,6 +108,11 @@ abstract class CallBackend {
 
   List<Map<String, String>>? getCurrentFeeds();
 
+  CallSession? getCallForParticipant(
+    GroupCallSession groupCall,
+    CallParticipant participant,
+  );
+
   @override
   bool operator ==(Object other);
   @override

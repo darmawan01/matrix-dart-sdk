@@ -1,0 +1,18 @@
+{
+    "mcpServers": {
+      "go-tools": {
+        "command": "node",
+        "args": [
+          "/home/z3r0/Nguli/code-graph/dist/index.js",
+          "${workspaceFolder}/lib",
+          "${workspaceFolder}/lib/src",
+          "${workspaceFolder}/lib/src/voip",
+          "${workspaceFolder}/lib/src/database",
+          "${workspaceFolder}/lib/src/models",
+          "${workspaceFolder}/lib/src/utils",
+          "${workspaceFolder}/lib/matrix_api_lite",
+          "${workspaceFolder}/lib/msc_extensions"
+        ]
+      }
+    }
+  }

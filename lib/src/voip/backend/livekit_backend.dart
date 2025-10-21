@@ -548,6 +548,15 @@ class LiveKitBackend extends CallBackend {
   }
 
   @override
+  CallSession? getCallForParticipant(
+    GroupCallSession groupCall,
+    CallParticipant participant,
+  ) {
+    // LiveKit doesn't use individual CallSession objects
+    return null;
+  }
+
+  @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is LiveKitBackend &&

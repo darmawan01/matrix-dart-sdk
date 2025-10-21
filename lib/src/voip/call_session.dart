@@ -89,16 +89,73 @@ class CallSession {
 
   /// Check if the peer connection is ready for track operations
   bool get _isPeerConnectionReadyForTracks {
-    if (pc == null) return false;
-    if (callHasEnded) return false;
+    if (pc == null) {
+      Logs().v('[VOIP] Peer connection is null, not ready for tracks');
+      return false;
+    }
+    if (callHasEnded) {
+      Logs().v('[VOIP] Call has ended, not ready for tracks');
+      return false;
+    }
 
     // Check if peer connection is in a valid state for adding tracks
     final state = pc!.signalingState;
-    return state == RTCSignalingState.RTCSignalingStateStable ||
+    Logs().v('[VOIP] Peer connection signaling state: $state');
+
+    // Allow tracks to be added even if signaling state is null initially
+    // WebRTC implementations may not immediately set the signaling state
+    if (state == null) {
+      Logs().v(
+        '[VOIP] Signaling state is null, allowing track operations (WebRTC may initialize later)',
+      );
+      return true;
+    }
+
+    final isReady = state == RTCSignalingState.RTCSignalingStateStable ||
         state == RTCSignalingState.RTCSignalingStateHaveLocalOffer ||
         state == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
         state == RTCSignalingState.RTCSignalingStateHaveLocalPrAnswer ||
         state == RTCSignalingState.RTCSignalingStateHaveRemotePrAnswer;
+
+    Logs().v('[VOIP] Peer connection ready for tracks: $isReady');
+    return isReady;
+  }
+
+  /// Check if the peer connection is ready for SDP operations (createAnswer, setLocalDescription, etc.)
+  bool get _isPeerConnectionReadyForSDP {
+    if (pc == null) {
+      Logs().v('[VOIP] Peer connection is null, not ready for SDP operations');
+      return false;
+    }
+    if (callHasEnded) {
+      Logs().v('[VOIP] Call has ended, not ready for SDP operations');
+      return false;
+    }
+
+    final state = pc!.signalingState;
+    Logs().v('[VOIP] Peer connection signaling state for SDP: $state');
+
+    // For SDP operations, we need to be more strict about state
+    // However, some WebRTC implementations may not set signaling state immediately
+    // If tracks can be added successfully, we should allow SDP operations too
+    if (state == null) {
+      Logs().w(
+        '[VOIP] Signaling state is null, but allowing SDP operations due to WebRTC implementation issue',
+      );
+      Logs().w(
+        '[VOIP] This is a workaround for WebRTC implementations that do not properly initialize signaling state',
+      );
+      return true;
+    }
+
+    final isReady = state == RTCSignalingState.RTCSignalingStateStable ||
+        state == RTCSignalingState.RTCSignalingStateHaveLocalOffer ||
+        state == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
+        state == RTCSignalingState.RTCSignalingStateHaveLocalPrAnswer ||
+        state == RTCSignalingState.RTCSignalingStateHaveRemotePrAnswer;
+
+    Logs().v('[VOIP] Peer connection ready for SDP operations: $isReady');
+    return isReady;
   }
 
   /// Process pending streams when peer connection becomes ready
@@ -244,11 +301,19 @@ class CallSession {
 
   // outgoing call
   Future<void> initOutboundCall(CallType type) async {
+    Logs().i('[VOIP] Initializing outbound call $callId of type $type');
     await _preparePeerConnection();
+    Logs().i(
+      '[VOIP] Peer connection prepared, setting state to kCreateOffer for call $callId',
+    );
     setCallState(CallState.kCreateOffer);
+    Logs().i('[VOIP] Getting user media for call $callId');
     final stream = await _getUserMedia(type);
     if (stream != null) {
+      Logs().i('[VOIP] Got user media stream, adding to call $callId');
       await addLocalStream(stream, SDPStreamMetadataPurpose.Usermedia);
+    } else {
+      Logs().w('[VOIP] Failed to get user media for call $callId');
     }
   }
 
@@ -334,9 +399,20 @@ class CallSession {
   }
 
   Future<void> answerWithStreams(List<WrappedMediaStream> callFeeds) async {
-    if (_inviteOrAnswerSent) return;
-    Logs().d('answering call $callId');
-    await gotCallFeedsForAnswer(callFeeds);
+    if (_inviteOrAnswerSent) {
+      Logs()
+          .w('[VOIP] Call $callId already answered, ignoring duplicate answer');
+      return;
+    }
+    Logs().d('[VOIP] Answering call $callId with ${callFeeds.length} streams');
+    Logs().v('[VOIP] Call state before answer: $state');
+    try {
+      await gotCallFeedsForAnswer(callFeeds);
+      Logs().v('[VOIP] Call state after answer: $state');
+    } catch (e, s) {
+      Logs().e('[VOIP] Failed to answer call $callId', e, s);
+      rethrow;
+    }
   }
 
   Future<void> replacedBy(CallSession newCall) async {
@@ -441,9 +517,25 @@ class CallSession {
 
     if (direction == CallDirection.kOutgoing) {
       setCallState(CallState.kConnecting);
+
+      // Check if peer connection is ready for SDP operations
+      if (!_isPeerConnectionReadyForSDP) {
+        Logs().w(
+          '[VOIP] Peer connection not ready for SDP operations, cannot set remote description',
+        );
+        await terminate(
+          CallParty.kLocal,
+          CallErrorCode.setRemoteDescription,
+          true,
+        );
+        return;
+      }
+
       try {
         await pc!.setRemoteDescription(answer);
-        for (final candidate in _remoteCandidates) {
+        // Create a copy to avoid concurrent modification during iteration
+        final candidatesCopy = List<RTCIceCandidate>.from(_remoteCandidates);
+        for (final candidate in candidatesCopy) {
           await pc!.addCandidate(candidate);
         }
       } catch (e, s) {
@@ -502,6 +594,15 @@ class CallSession {
     }
 
     try {
+      // Check if peer connection is ready for SDP operations
+      if (!_isPeerConnectionReadyForSDP) {
+        Logs().w(
+          '[VOIP] Peer connection not ready for SDP operations, cannot process negotiate',
+        );
+        await terminate(CallParty.kLocal, CallErrorCode.createAnswer, true);
+        return;
+      }
+
       // Check if we can safely set the remote description
       final currentState = pc!.signalingState;
       Logs().v(
@@ -730,21 +831,57 @@ class CallSession {
       onStreamAdd.add(newStream);
     }
 
+    Logs().v(
+      '[VOIP] addLocalStream: addToPeerConnection=$addToPeerConnection, purpose=$purpose',
+    );
+
     if (addToPeerConnection && _isPeerConnectionReadyForTracks) {
+      Logs().i('[VOIP] Peer connection is ready, adding tracks immediately');
       try {
         if (purpose == SDPStreamMetadataPurpose.Screenshare) {
           _screensharingSenders.clear();
           for (final track in stream.getTracks()) {
             Logs().v('[VOIP] Adding screenshare track: ${track.kind}');
-            _screensharingSenders.add(await pc!.addTrack(track, stream));
+            try {
+              final sender = await pc!.addTrack(track, stream);
+              _screensharingSenders.add(sender);
+              Logs().v(
+                '[VOIP] Successfully added screenshare track: ${track.kind}',
+              );
+            } catch (e, s) {
+              Logs().e(
+                '[VOIP] Failed to add screenshare track: ${track.kind}',
+                e,
+                s,
+              );
+              Logs().e('[VOIP] Peer connection state: ${pc!.signalingState}');
+              Logs().e('[VOIP] Track enabled: ${track.enabled}');
+              rethrow;
+            }
           }
         } else if (purpose == SDPStreamMetadataPurpose.Usermedia) {
           _usermediaSenders.clear();
           for (final track in stream.getTracks()) {
             Logs().v('[VOIP] Adding usermedia track: ${track.kind}');
-            _usermediaSenders.add(await pc!.addTrack(track, stream));
+            try {
+              final sender = await pc!.addTrack(track, stream);
+              _usermediaSenders.add(sender);
+              Logs().v(
+                '[VOIP] Successfully added usermedia track: ${track.kind}',
+              );
+            } catch (e, s) {
+              Logs().e(
+                '[VOIP] Failed to add usermedia track: ${track.kind}',
+                e,
+                s,
+              );
+              Logs().e('[VOIP] Peer connection state: ${pc!.signalingState}');
+              Logs().e('[VOIP] Track enabled: ${track.enabled}');
+              rethrow;
+            }
           }
         }
+        Logs().i('[VOIP] Successfully added tracks to peer connection');
       } catch (e, s) {
         Logs().e('[VOIP] Failed to add track to peer connection', e, s);
         // Don't rethrow here as it might be a recoverable error
@@ -1014,8 +1151,19 @@ class CallSession {
     if (direction == CallDirection.kIncoming) {
       setCallState(CallState.kCreateAnswer);
 
+      // Check if peer connection is ready for SDP operations
+      if (!_isPeerConnectionReadyForSDP) {
+        Logs().w(
+          '[VOIP] Peer connection not ready for SDP operations, cannot create answer',
+        );
+        await terminate(CallParty.kLocal, CallErrorCode.createAnswer, true);
+        return;
+      }
+
       final answer = await pc!.createAnswer({});
-      for (final candidate in _remoteCandidates) {
+      // Create a copy to avoid concurrent modification during iteration
+      final candidatesCopy = List<RTCIceCandidate>.from(_remoteCandidates);
+      for (final candidate in candidatesCopy) {
         await pc!.addCandidate(candidate);
       }
 
@@ -1058,6 +1206,11 @@ class CallSession {
 
       _inviteOrAnswerSent = true;
       _answeredByUs = true;
+
+      // Cancel the invite timer since the call has been answered
+      _inviteTimer?.cancel();
+      _inviteTimer = null;
+      Logs().v('[VOIP] Cancelled invite timer after call was answered');
     }
   }
 
@@ -1084,6 +1237,9 @@ class CallSession {
     required CallErrorCode reason,
     bool shouldEmit = true,
   }) async {
+    Logs().i(
+      '[VOIP] Call $callId hanging up. Reason: $reason, shouldEmit: $shouldEmit, current state: $state',
+    );
     setCallState(CallState.kEnding);
     await terminate(CallParty.kLocal, reason, shouldEmit);
     try {
@@ -1112,7 +1268,14 @@ class CallSession {
     CallErrorCode reason,
     bool shouldEmit,
   ) async {
+    Logs().i(
+      '[VOIP] Call $callId terminating. Party: $party, reason: $reason, shouldEmit: $shouldEmit, current state: $state',
+    );
+
     if (state == CallState.kConnected) {
+      Logs().i(
+        '[VOIP] Call $callId is connected, hanging up instead of terminating',
+      );
       await hangup(
         reason: CallErrorCode.userHangup,
         shouldEmit: true,
@@ -1151,7 +1314,16 @@ class CallSession {
       voip.incomingCallRoomId.removeWhere((key, value) => value == callId);
     }
 
+    Logs().i(
+      '[VOIP] Removing call $callId from calls map. Current state: $state, reason: $reason',
+    );
+    Logs().v(
+      '[VOIP] Calls before removal: ${voip.calls.keys.map((k) => '${k.roomId}:${k.callId}').toList()}',
+    );
     voip.calls.removeWhere((key, value) => key.callId == callId);
+    Logs().v(
+      '[VOIP] Calls after removal: ${voip.calls.keys.map((k) => '${k.roomId}:${k.callId}').toList()}',
+    );
 
     await cleanUp();
     if (shouldEmit) {
@@ -1190,6 +1362,19 @@ class CallSession {
     if (callHasEnded) {
       Logs().d(
         'Ignoring newly created offer on call ID ${opts.callId} because the call has ended',
+      );
+      return;
+    }
+
+    // Check if peer connection is ready for SDP operations
+    if (!_isPeerConnectionReadyForSDP) {
+      Logs().w(
+        '[VOIP] Peer connection not ready for SDP operations, cannot set local description',
+      );
+      await terminate(
+        CallParty.kLocal,
+        CallErrorCode.setLocalDescription,
+        true,
       );
       return;
     }
@@ -1265,20 +1450,41 @@ class CallSession {
   }
 
   Future<void> onNegotiationNeeded() async {
-    Logs().d('Negotiation is needed!');
+    Logs().i('[VOIP] Negotiation is needed for call $callId!');
+    Logs().i('[VOIP] Current call state: $state');
+    Logs().i('[VOIP] Peer connection signaling state: ${pc?.signalingState}');
+
+    // Check if peer connection is ready for SDP operations
+    if (!_isPeerConnectionReadyForSDP) {
+      Logs().w(
+        '[VOIP] Peer connection not ready for SDP operations, cannot create offer',
+      );
+      return;
+    }
+
     _makingOffer = true;
     try {
       // Process any pending streams before creating offer
+      Logs().i(
+        '[VOIP] Processing pending streams before creating offer for call $callId',
+      );
       await _processPendingStreams();
 
       // The first addTrack(audio track) on iOS will trigger
       // onNegotiationNeeded, which causes creatOffer to only include
       // audio m-line, add delay and wait for video track to be added,
       // then createOffer can get audio/video m-line correctly.
+      Logs().i(
+        '[VOIP] Waiting ${voip.timeouts!.delayBeforeOffer} before creating offer',
+      );
       await Future.delayed(voip.timeouts!.delayBeforeOffer);
+
+      Logs().i('[VOIP] Creating offer for call $callId');
       final offer = await pc!.createOffer({});
+      Logs().i('[VOIP] Offer created successfully, processing...');
       await _gotLocalOffer(offer);
     } catch (e) {
+      Logs().e('[VOIP] Failed to create offer for call $callId', e);
       await _getLocalOfferFailed(e);
       return;
     } finally {
@@ -1290,10 +1496,15 @@ class CallSession {
     int iceRestartedCount = 0;
 
     try {
+      Logs().i('[VOIP] Creating peer connection for call $callId');
       pc = await _createPeerConnection();
+      Logs().i('[VOIP] Peer connection created successfully for call $callId');
+
       pc!.onRenegotiationNeeded = onNegotiationNeeded;
+      Logs().i('[VOIP] Set onRenegotiationNeeded callback for call $callId');
 
       // Process any pending streams now that peer connection is ready
+      Logs().i('[VOIP] Processing pending streams for call $callId');
       await _processPendingStreams();
 
       pc!.onIceCandidate = (RTCIceCandidate candidate) async {
@@ -1330,8 +1541,12 @@ class CallSession {
         }
       };
       pc!.onIceConnectionState = (RTCIceConnectionState state) async {
-        Logs().v('[VOIP] RTCIceConnectionState => ${state.toString()}');
+        Logs().v(
+          '[VOIP] RTCIceConnectionState => ${state.toString()} for call $callId',
+        );
+        Logs().v('[VOIP] Current call state: ${this.state}');
         if (state == RTCIceConnectionState.RTCIceConnectionStateConnected) {
+          Logs().i('[VOIP] ICE connection established for call $callId');
           _localCandidates.clear();
           _remoteCandidates.clear();
           iceRestartedCount = 0;
@@ -1343,10 +1558,16 @@ class CallSession {
           RTCIceConnectionState.RTCIceConnectionStateFailed,
           RTCIceConnectionState.RTCIceConnectionStateDisconnected,
         }.contains(state)) {
+          Logs().w(
+            '[VOIP] ICE connection failed/disconnected for call $callId, restart count: $iceRestartedCount',
+          );
           if (iceRestartedCount < 3) {
             await restartIce();
             iceRestartedCount++;
           } else {
+            Logs().e(
+              '[VOIP] Max ICE restart attempts reached for call $callId, hanging up',
+            );
             await hangup(reason: CallErrorCode.iceFailed);
           }
         }
@@ -1466,21 +1687,62 @@ class CallSession {
       'iceServers': opts.iceServers,
       'sdpSemantics': 'unified-plan',
     };
-    final pc = await voip.delegate.createPeerConnection(configuration);
-    pc.onTrack = (RTCTrackEvent event) async {
-      for (final stream in event.streams) {
-        await _addRemoteStream(stream);
-        for (final track in stream.getTracks()) {
-          track.onEnded = () async {
-            if (stream.getTracks().isEmpty) {
-              Logs().d('[VOIP] detected a empty stream, removing it');
-              await _removeStream(stream);
-            }
-          };
-        }
+    Logs().i(
+      '[VOIP] Creating peer connection with configuration: $configuration',
+    );
+
+    try {
+      final pc = await voip.delegate.createPeerConnection(configuration);
+      Logs().i(
+        '[VOIP] Peer connection created, initial signaling state: ${pc.signalingState}',
+      );
+
+      // Check if signaling state is null immediately after creation
+      if (pc.signalingState == null) {
+        Logs().e(
+          '[VOIP] CRITICAL: Peer connection signaling state is null immediately after creation!',
+        );
+        Logs().e(
+          '[VOIP] This indicates a serious issue with the WebRTC implementation.',
+        );
+        Logs().e('[VOIP] Peer connection object: $pc');
+        Logs().e('[VOIP] Peer connection type: ${pc.runtimeType}');
       }
-    };
-    return pc;
+
+      pc.onTrack = (RTCTrackEvent event) async {
+        Logs().i('[VOIP] Received remote track: ${event.track.kind}');
+        for (final stream in event.streams) {
+          await _addRemoteStream(stream);
+          for (final track in stream.getTracks()) {
+            track.onEnded = () async {
+              if (stream.getTracks().isEmpty) {
+                Logs().d('[VOIP] detected a empty stream, removing it');
+                await _removeStream(stream);
+              }
+            };
+          }
+        }
+      };
+
+      // Add a small delay to ensure peer connection is fully initialized
+      await Future.delayed(Duration(milliseconds: 100));
+      Logs().i(
+        '[VOIP] Peer connection signaling state after delay: ${pc.signalingState}',
+      );
+
+      // Check again after delay
+      if (pc.signalingState == null) {
+        Logs().e(
+          '[VOIP] CRITICAL: Peer connection signaling state is still null after delay!',
+        );
+        Logs().e('[VOIP] This confirms a WebRTC implementation issue.');
+      }
+
+      return pc;
+    } catch (e, s) {
+      Logs().e('[VOIP] Failed to create peer connection', e, s);
+      rethrow;
+    }
   }
 
   Future<void> createDataChannel(

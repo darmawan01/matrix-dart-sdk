@@ -19,6 +19,15 @@ class MeshBackend extends CallBackend {
   /// participant:volume
   final Map<CallParticipant, double> _audioLevelsMap = {};
 
+  /// Circuit breaker state to prevent cascade failures
+  int _failedCallCount = 0;
+  DateTime? _lastFailureTime;
+  static const int _maxFailedCalls = 5;
+  static const Duration _circuitBreakerTimeout = Duration(minutes: 2);
+
+  /// Set of call IDs currently being processed to prevent race conditions
+  final Set<String> _processingCalls = {};
+
   /// The stream is used to prepare for incoming peer calls like registering listeners
   StreamSubscription<CallSession>? _callSetupSubscription;
 
@@ -41,6 +50,45 @@ class MeshBackend extends CallBackend {
     return {
       'type': type,
     };
+  }
+
+  /// Check if circuit breaker is open (too many failures)
+  bool get _isCircuitBreakerOpen {
+    if (_failedCallCount >= _maxFailedCalls) {
+      if (_lastFailureTime != null) {
+        final timeSinceLastFailure =
+            DateTime.now().difference(_lastFailureTime!);
+        if (timeSinceLastFailure < _circuitBreakerTimeout) {
+          Logs().w(
+            '[VOIP] Circuit breaker is open - too many failed calls. Waiting ${_circuitBreakerTimeout.inSeconds - timeSinceLastFailure.inSeconds} seconds',
+          );
+          return true;
+        } else {
+          // Reset circuit breaker after timeout
+          _failedCallCount = 0;
+          _lastFailureTime = null;
+          Logs().i('[VOIP] Circuit breaker reset after timeout');
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Record a successful call to reset circuit breaker
+  void _recordCallSuccess() {
+    if (_failedCallCount > 0) {
+      _failedCallCount = 0;
+      _lastFailureTime = null;
+      Logs().i('[VOIP] Circuit breaker reset due to successful call');
+    }
+  }
+
+  /// Record a failed call for circuit breaker
+  void _recordCallFailure() {
+    _failedCallCount++;
+    _lastFailureTime = DateTime.now();
+    Logs()
+        .w('[VOIP] Recorded call failure #$_failedCallCount/$_maxFailedCalls');
   }
 
   CallParticipant? _activeSpeaker;
@@ -96,7 +144,8 @@ class MeshBackend extends CallBackend {
     }
   }
 
-  CallSession? _getCallForParticipant(
+  @override
+  CallSession? getCallForParticipant(
     GroupCallSession groupCall,
     CallParticipant participant,
   ) {
@@ -710,25 +759,40 @@ class MeshBackend extends CallBackend {
     GroupCallSession groupCall,
     CallSession newCall,
   ) {
-    // The incoming calls may be for another room, which we will ignore.
-    if (newCall.room.id != groupCall.room.id) return;
+    Logs().v(
+      '[VOIP] [_onIncomingCallInMeshSetup] Received incoming call setup from ${newCall.remoteUserId}:${newCall.remoteDeviceId}',
+    );
 
-    if (newCall.state != CallState.kRinging) {
+    // The incoming calls may be for another room, which we will ignore.
+    if (newCall.room.id != groupCall.room.id) {
       Logs().v(
-        '[_onIncomingCallInMeshSetup] Incoming call no longer in ringing state. Ignoring.',
+        '[VOIP] [_onIncomingCallInMeshSetup] Ignoring call from different room: ${newCall.room.id} vs ${groupCall.room.id}',
       );
       return;
     }
+
+    // Allow setup for calls in ringing state or create offer state (race condition handling)
+    if (newCall.state != CallState.kRinging &&
+        newCall.state != CallState.kCreateOffer) {
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshSetup] Incoming call not in ringing or create offer state (${newCall.state}). Ignoring.',
+      );
+      return;
+    }
+
+    Logs().v(
+      '[VOIP] [_onIncomingCallInMeshSetup] Accepting incoming call setup in state: ${newCall.state}',
+    );
 
     if (newCall.groupCallId == null ||
         newCall.groupCallId != groupCall.groupCallId) {
       Logs().v(
-        '[_onIncomingCallInMeshSetup] Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call',
+        '[VOIP] [_onIncomingCallInMeshSetup] Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call ${groupCall.groupCallId}',
       );
       return;
     }
 
-    final existingCall = _getCallForParticipant(
+    final existingCall = getCallForParticipant(
       groupCall,
       CallParticipant(
         groupCall.voip,
@@ -739,65 +803,130 @@ class MeshBackend extends CallBackend {
 
     // if it's an existing call, `_registerListenersForCall` will be called in
     // `_replaceCall` that is used in `_onIncomingCallStart`.
-    if (existingCall != null) return;
+    if (existingCall != null) {
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshSetup] Existing call found for participant, skipping setup',
+      );
+      return;
+    }
 
     Logs().v(
-      '[_onIncomingCallInMeshSetup] GroupCallSession: incoming call from: ${newCall.remoteUserId}${newCall.remoteDeviceId}${newCall.remotePartyId}',
+      '[VOIP] [_onIncomingCallInMeshSetup] GroupCallSession: incoming call from: ${newCall.remoteUserId}:${newCall.remoteDeviceId}:${newCall.remotePartyId}',
     );
 
     _registerListenersBeforeCallAdd(newCall);
+    Logs().v(
+      '[VOIP] [_onIncomingCallInMeshSetup] Successfully registered listeners for incoming call',
+    );
   }
 
   Future<void> _onIncomingCallInMeshStart(
     GroupCallSession groupCall,
     CallSession newCall,
   ) async {
-    // The incoming calls may be for another room, which we will ignore.
-    if (newCall.room.id != groupCall.room.id) {
-      return;
-    }
-
-    if (newCall.state != CallState.kRinging) {
-      Logs().v(
-        '[_onIncomingCallInMeshStart] Incoming call no longer in ringing state. Ignoring.',
-      );
-      return;
-    }
-
-    if (newCall.groupCallId == null ||
-        newCall.groupCallId != groupCall.groupCallId) {
-      Logs().v(
-        '[_onIncomingCallInMeshStart] Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call',
-      );
-      await newCall.reject();
-      return;
-    }
-
-    final existingCall = _getCallForParticipant(
-      groupCall,
-      CallParticipant(
-        groupCall.voip,
-        userId: newCall.remoteUserId!,
-        deviceId: newCall.remoteDeviceId,
-      ),
-    );
-
-    if (existingCall != null && existingCall.callId == newCall.callId) {
-      return;
-    }
-
     Logs().v(
-      '[_onIncomingCallInMeshStart] GroupCallSession: incoming call from: ${newCall.remoteUserId}${newCall.remoteDeviceId}${newCall.remotePartyId}',
+      '[VOIP] [_onIncomingCallInMeshStart] Received incoming call start from ${newCall.remoteUserId}:${newCall.remoteDeviceId}',
+    );
+    Logs().v(
+      '[VOIP] [_onIncomingCallInMeshStart] Call state: ${newCall.state}, Call ID: ${newCall.callId}',
     );
 
-    // Check if the user calling has an existing call and use this call instead.
-    if (existingCall != null) {
-      await _replaceCall(groupCall, existingCall, newCall);
-    } else {
-      await _addCall(groupCall, newCall);
+    // Prevent race conditions by checking if this call is already being processed
+    if (_processingCalls.contains(newCall.callId)) {
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshStart] Call ${newCall.callId} is already being processed, ignoring',
+      );
+      return;
     }
 
-    await newCall.answerWithStreams(_getLocalStreams());
+    _processingCalls.add(newCall.callId);
+
+    try {
+      // The incoming calls may be for another room, which we will ignore.
+      if (newCall.room.id != groupCall.room.id) {
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Ignoring call from different room: ${newCall.room.id} vs ${groupCall.room.id}',
+        );
+        return;
+      }
+
+      // Allow answering calls in ringing state or create offer state (race condition handling)
+      if (newCall.state != CallState.kRinging &&
+          newCall.state != CallState.kCreateOffer) {
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Incoming call not in ringing or create offer state (${newCall.state}). Ignoring.',
+        );
+        return;
+      }
+
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshStart] Accepting incoming call in state: ${newCall.state}',
+      );
+
+      if (newCall.groupCallId == null ||
+          newCall.groupCallId != groupCall.groupCallId) {
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Incoming call with groupCallId ${newCall.groupCallId} ignored because it doesn\'t match the current group call ${groupCall.groupCallId}',
+        );
+        await newCall.reject();
+        return;
+      }
+
+      final existingCall = getCallForParticipant(
+        groupCall,
+        CallParticipant(
+          groupCall.voip,
+          userId: newCall.remoteUserId!,
+          deviceId: newCall.remoteDeviceId,
+        ),
+      );
+
+      if (existingCall != null && existingCall.callId == newCall.callId) {
+        Logs().v('[VOIP] [_onIncomingCallInMeshStart] Same call ID, ignoring');
+        return;
+      }
+
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshStart] GroupCallSession: incoming call from: ${newCall.remoteUserId}:${newCall.remoteDeviceId}:${newCall.remotePartyId}',
+      );
+
+      // Check if the user calling has an existing call and use this call instead.
+      if (existingCall != null) {
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Replacing existing call for participant',
+        );
+        await _replaceCall(groupCall, existingCall, newCall);
+      } else {
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Adding new call for participant',
+        );
+        await _addCall(groupCall, newCall);
+      }
+
+      Logs()
+          .v('[VOIP] [_onIncomingCallInMeshStart] Answering call with streams');
+      Logs().v(
+        '[VOIP] [_onIncomingCallInMeshStart] Local streams count: ${_getLocalStreams().length}',
+      );
+      try {
+        await newCall.answerWithStreams(_getLocalStreams());
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Successfully answered incoming call',
+        );
+        Logs().v(
+          '[VOIP] [_onIncomingCallInMeshStart] Call state after answer: ${newCall.state}',
+        );
+      } catch (e, s) {
+        Logs().e(
+          '[VOIP] [_onIncomingCallInMeshStart] Failed to answer incoming call',
+          e,
+          s,
+        );
+        rethrow;
+      }
+    } finally {
+      _processingCalls.remove(newCall.callId);
+    }
   }
 
   @override
@@ -906,6 +1035,9 @@ class MeshBackend extends CallBackend {
     _activeSpeakerLoopTimeout?.cancel();
     await _callSetupSubscription?.cancel();
     await _callStartSubscription?.cancel();
+
+    // Clear processing calls set to prevent memory leaks
+    _processingCalls.clear();
   }
 
   @override
@@ -952,13 +1084,27 @@ class MeshBackend extends CallBackend {
     CallParticipant rp,
     CallMembership mem,
   ) async {
-    final existingCall = _getCallForParticipant(groupCall, rp);
+    // Check circuit breaker before attempting new call setup
+    if (_isCircuitBreakerOpen) {
+      Logs().w(
+        '[VOIP] Circuit breaker is open, skipping call setup for ${rp.id}',
+      );
+      return;
+    }
+
+    final existingCall = getCallForParticipant(groupCall, rp);
     if (existingCall != null) {
+      Logs().v(
+        '[VOIP] Found existing call for participant ${rp.id}: ${existingCall.callId} (remoteSessionId: ${existingCall.remoteSessionId}, mem.membershipId: ${mem.membershipId})',
+      );
       if (existingCall.remoteSessionId != mem.membershipId) {
+        Logs().v(
+          '[VOIP] Session ID mismatch, hanging up existing call and creating new one',
+        );
         await existingCall.hangup(reason: CallErrorCode.unknownError);
       } else {
-        Logs().e(
-          '[VOIP] onMemberStateChanged Not updating _participants list, already have a ongoing call with ${rp.id}',
+        Logs().v(
+          '[VOIP] Session ID matches, skipping call creation for ${rp.id}',
         );
         return;
       }
@@ -974,32 +1120,64 @@ class MeshBackend extends CallBackend {
       '[VOIP] Lexicographical comparison: localId="$localId" vs remoteId="$remoteId"',
     );
 
-    if (localId.compareTo(remoteId) > 0) {
+    // Primary comparison: participant IDs
+    final participantComparison = localId.compareTo(remoteId);
+
+    if (participantComparison > 0) {
       Logs().i('[VOIP] Waiting for ${rp.id} to send call invite.');
+
+      // Add a timeout mechanism to prevent deadlock
+      // If the other participant doesn't initiate the call within a reasonable time,
+      // we'll initiate it ourselves as a fallback
+      Timer(Duration(seconds: 5), () async {
+        final existingCall = getCallForParticipant(groupCall, rp);
+        if (existingCall == null) {
+          Logs().w(
+            '[VOIP] Timeout waiting for ${rp.id} to initiate call, initiating ourselves as fallback',
+          );
+          await _initiateCallAsFallback(groupCall, rp, mem);
+        }
+      });
+
       return;
-    } else if (localId.compareTo(remoteId) == 0) {
-      Logs().w(
-        '[VOIP] Same participant ID detected: $localId - this should not happen in group calls',
-      );
-      // Fallback: Use session ID for comparison if participant IDs are the same
+    } else if (participantComparison == 0) {
+      // Same participant ID - use session ID for tie-breaking
       final localSessionId = groupCall.voip.currentSessionId;
       final remoteSessionId = mem.membershipId;
+
       Logs().v(
-        '[VOIP] Fallback comparison using session IDs: localSessionId="$localSessionId" vs remoteSessionId="$remoteSessionId"',
+        '[VOIP] Same participant ID detected, using session ID fallback: localSessionId="$localSessionId" vs remoteSessionId="$remoteSessionId"',
       );
 
       if (localSessionId.compareTo(remoteSessionId) > 0) {
         Logs().i(
-          '[VOIP] Waiting for ${rp.id} to send call invite (fallback comparison).',
+          '[VOIP] Waiting for ${rp.id} to send call invite (session ID fallback).',
         );
+
+        // Add timeout for session ID fallback too
+        Timer(Duration(seconds: 3), () async {
+          final existingCall = getCallForParticipant(groupCall, rp);
+          if (existingCall == null) {
+            Logs().w(
+              '[VOIP] Timeout waiting for ${rp.id} to initiate call (session fallback), initiating ourselves',
+            );
+            await _initiateCallAsFallback(groupCall, rp, mem);
+          }
+        });
+
         return;
       } else if (localSessionId.compareTo(remoteSessionId) == 0) {
         Logs().w(
-          '[VOIP] Same session ID detected: $localSessionId - skipping call setup',
+          '[VOIP] Same session ID detected: $localSessionId - this should not happen, skipping call setup',
         );
         return;
       }
     }
+
+    // If we reach here, we should initiate the call
+    Logs().v(
+      '[VOIP] Initiating call to ${rp.id} (userId: ${mem.userId}, deviceId: ${mem.deviceId})',
+    );
 
     final opts = CallOptions(
       callId: genCallID(),
@@ -1023,8 +1201,11 @@ class MeshBackend extends CallBackend {
     // party id set to when answered
     newCall.remoteSessionId = mem.membershipId;
 
+    Logs().v('[VOIP] Created call session ${newCall.callId} for ${rp.id}');
+
     _registerListenersBeforeCallAdd(newCall);
 
+    Logs().v('[VOIP] Placing call with streams to ${rp.id}');
     await newCall.placeCallWithStreams(
       _getLocalStreams(),
       requestScreenSharing: mem.feeds?.any(
@@ -1034,7 +1215,61 @@ class MeshBackend extends CallBackend {
           false,
     );
 
-    await _addCall(groupCall, newCall);
+    Logs().v('[VOIP] Adding call ${newCall.callId} to group call');
+    try {
+      await _addCall(groupCall, newCall);
+      _recordCallSuccess();
+      Logs().v('[VOIP] Successfully initiated call to ${rp.id}');
+    } catch (e, s) {
+      _recordCallFailure();
+      Logs().e('[VOIP] Failed to add call to group call', e, s);
+      rethrow;
+    }
+  }
+
+  /// Fallback method to initiate a call when the other participant doesn't respond
+  Future<void> _initiateCallAsFallback(
+    GroupCallSession groupCall,
+    CallParticipant rp,
+    CallMembership mem,
+  ) async {
+    try {
+      Logs().v('[VOIP] Initiating fallback call to ${rp.id}');
+
+      final opts = CallOptions(
+        callId: genCallID(),
+        room: groupCall.room,
+        voip: groupCall.voip,
+        dir: CallDirection.kOutgoing,
+        localPartyId: groupCall.voip.currentSessionId,
+        groupCallId: groupCall.groupCallId,
+        type: CallType.kVideo,
+        iceServers: await groupCall.voip.getIceServers(),
+      );
+      final newCall = groupCall.voip.createNewCall(opts);
+
+      newCall.remoteUserId = mem.userId;
+      newCall.remoteDeviceId = mem.deviceId;
+      newCall.remoteSessionId = mem.membershipId;
+
+      _registerListenersBeforeCallAdd(newCall);
+
+      await newCall.placeCallWithStreams(
+        _getLocalStreams(),
+        requestScreenSharing: mem.feeds?.any(
+              (element) =>
+                  element['purpose'] == SDPStreamMetadataPurpose.Screenshare,
+            ) ??
+            false,
+      );
+
+      await _addCall(groupCall, newCall);
+      _recordCallSuccess();
+      Logs().v('[VOIP] Successfully initiated fallback call to ${rp.id}');
+    } catch (e, s) {
+      _recordCallFailure();
+      Logs().e('[VOIP] Failed to initiate fallback call to ${rp.id}', e, s);
+    }
   }
 
   @override

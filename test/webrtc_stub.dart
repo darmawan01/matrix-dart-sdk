@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:webrtc_interface/webrtc_interface.dart';
-
 import 'package:matrix/matrix.dart';
+import 'package:webrtc_interface/webrtc_interface.dart';
 
 class MockWebRTCDelegate implements WebRTCDelegate {
   bool throwOnCreatePeerConnection = false;
@@ -141,6 +140,7 @@ class MockMediaDevices implements MediaDevices {
     if (throwOnGetDisplayMedia) {
       throw Exception('mock exception while getting display media');
     }
+
     return MockMediaStream('', '');
   }
 

@@ -131,7 +131,7 @@ class Client extends MatrixApi {
   @override
   set homeserver(Uri? homeserver) {
     if (this.homeserver != null && homeserver?.host != this.homeserver?.host) {
-      _wellKnown = null;
+      _wellKnown = _getAuthMetadataResponseCache = null;
     }
     super.homeserver = homeserver;
   }
@@ -218,10 +218,9 @@ class Client extends MatrixApi {
     /// most common reason for soft logouts.
     /// You can also perform a new login here by passing the existing deviceId.
     this.onSoftLogout,
-
-    /// Experimental feature which allows to send a custom refresh token
-    /// lifetime to the server which overrides the default one. Needs server
-    /// support.
+    @Deprecated(
+      'Use `customRefreshTokenLifetime` in `Client.refreshAccessToken() directly.',
+    )
     this.customRefreshTokenLifetime,
     this.typingIndicatorTimeout = const Duration(seconds: 30),
 
@@ -273,6 +272,9 @@ class Client extends MatrixApi {
     registerDefaultCommands();
   }
 
+  @Deprecated(
+    'Use `customRefreshTokenLifetime` in `Client.refreshAccessToken() directly.',
+  )
   Duration? customRefreshTokenLifetime;
 
   /// Fetches the refreshToken from the database and tries to get a new
@@ -281,7 +283,14 @@ class Client extends MatrixApi {
   /// logout case.
   /// Throws an Exception if there is no refresh token available or the
   /// client is not logged in.
-  Future<void> refreshAccessToken() async {
+  Future<void> refreshAccessToken({
+    /// Experimental feature which allows to send a custom refresh token
+    /// lifetime to the server which overrides the default one. Needs server
+    /// support.
+    Duration? customRefreshTokenLifetime,
+  }) async {
+    // ignore: deprecated_member_use_from_same_package
+    customRefreshTokenLifetime ??= this.customRefreshTokenLifetime;
     final storedClient = await database.getClient(clientName);
     final refreshToken = storedClient?.tryGet<String>('refresh_token');
     if (refreshToken == null) {
@@ -438,8 +447,13 @@ class Client extends MatrixApi {
     return null;
   }
 
-  Map<String, dynamic> get directChats =>
-      _accountData['m.direct']?.content ?? {};
+  Map<String, List<String>> get directChats =>
+      (_accountData['m.direct']?.content ?? {}).map(
+        (userId, list) => MapEntry(
+          userId,
+          (list is! List) ? [] : list.whereType<String>().toList(),
+        ),
+      );
 
   /// Returns the first room ID from the store (the room with the latest event)
   /// which is a private chat with the user [userId].
@@ -514,9 +528,17 @@ class Client extends MatrixApi {
         DiscoveryInformation?,
         GetVersionsResponse versions,
         List<LoginFlow>,
+        GetAuthMetadataResponse? authMetadata,
       )> checkHomeserver(
     Uri homeserverUrl, {
     bool checkWellKnown = true,
+
+    /// Weither this method should also call `/auth_metadata` to fetch
+    /// Matrix native OIDC information. Defaults to if the `/versions` endpoint
+    /// returns version v1.15 or higher. Set to `true` to always call the
+    /// endpoint if your homeserver supports the endpoint while not fully
+    /// supporting version v1.15 yet.
+    bool? fetchAuthMetadata,
     Set<String>? overrideSupportedVersions,
   }) async {
     final supportedVersions =
@@ -553,7 +575,21 @@ class Client extends MatrixApi {
         );
       }
 
-      return (wellKnown, versions, loginTypes);
+      fetchAuthMetadata ??= versions.versions.any(
+        (v) => isVersionGreaterThanOrEqualTo(v, 'v1.15'),
+      );
+      GetAuthMetadataResponse? authMetadata;
+      if (fetchAuthMetadata) {
+        try {
+          authMetadata = await getAuthMetadata();
+        } on MatrixException catch (e, s) {
+          if (e.error != MatrixError.M_UNRECOGNIZED) {
+            Logs().w('Unable to discover OIDC auth metadata.', e, s);
+          }
+        }
+      }
+
+      return (wellKnown, versions, loginTypes, authMetadata);
     } catch (_) {
       homeserver = null;
       rethrow;
@@ -721,6 +757,12 @@ class Client extends MatrixApi {
     );
     return response;
   }
+
+  GetAuthMetadataResponse? _getAuthMetadataResponseCache;
+
+  @override
+  Future<GetAuthMetadataResponse> getAuthMetadata() async =>
+      _getAuthMetadataResponseCache ??= await super.getAuthMetadata();
 
   /// Sends a logout command to the homeserver and clears all local data,
   /// including all persistent data from the store.
@@ -1963,9 +2005,9 @@ class Client extends MatrixApi {
   ///
   /// Sends [LoginState.loggedIn] to [onLoginStateChanged].
   ///
-  /// If one of [newToken], [newUserID], [newDeviceID], [newDeviceName] is set then
-  /// all of them must be set! If you don't set them, this method will try to
-  /// get them from the database.
+  /// If one of [newToken] is set, but one of [newUserID], [newDeviceID] is
+  /// null, then this method calls `/whoami` to fetch user ID and device ID
+  /// and rethrows if this request fails.
   ///
   /// Set [waitForFirstSync] and [waitUntilLoadCompletedLoaded] to false to speed this
   /// up. You can then wait for `roomsLoading`, `_accountDataLoading` and
@@ -1989,16 +2031,9 @@ class Client extends MatrixApi {
     /// To track what actually happens you can set a callback here.
     void Function(InitState)? onInitStateChanged,
   }) async {
-    if ((newToken != null ||
-            newUserID != null ||
-            newDeviceID != null ||
-            newDeviceName != null) &&
-        (newToken == null ||
-            newUserID == null ||
-            newDeviceID == null ||
-            newDeviceName == null)) {
+    if (newToken != null && homeserver == null && newHomeserver == null) {
       throw ClientInitPreconditionError(
-        'If one of [newToken, newUserID, newDeviceID, newDeviceName] is set then all of them must be set!',
+        'init() can not be performed with an access token when no homeserver was specified.',
       );
     }
 
@@ -2088,6 +2123,12 @@ class Client extends MatrixApi {
         onInitStateChanged?.call(InitState.finished);
         onLoginStateChanged.add(LoginState.loggedIn);
         return;
+      }
+
+      if (accessToken != null && (userID == null || deviceID == null)) {
+        final userInfo = await getTokenOwner();
+        _userID = userID = userInfo.userId;
+        _deviceID = userInfo.deviceId;
       }
 
       if (accessToken == null || homeserver == null || userID == null) {
@@ -2238,8 +2279,8 @@ class Client extends MatrixApi {
       await dispose();
     }
 
-    _id = accessToken = _syncFilterId =
-        homeserver = _userID = _deviceID = _deviceName = _prevBatch = null;
+    _id = accessToken = _syncFilterId = homeserver =
+        _userID = _deviceID = _deviceName = _prevBatch = _trackedUserIds = null;
     _rooms = [];
     _eventsPendingDecryption.clear();
     await encryption?.dispose();
@@ -2556,6 +2597,7 @@ class Client extends MatrixApi {
       for (final userId in deviceLists.left ?? []) {
         if (_userDeviceKeys.containsKey(userId)) {
           _userDeviceKeys.remove(userId);
+          _trackedUserIds?.remove(userId);
         }
       }
     }
@@ -2824,16 +2866,26 @@ class Client extends MatrixApi {
     final callEvents = <Event>[];
 
     for (var event in events) {
-      // The client must ignore any new m.room.encryption event to prevent
-      // man-in-the-middle attacks!
-      if ((event.type == EventTypes.Encryption &&
-          room.encrypted &&
-          event.content.tryGet<String>('algorithm') !=
-              room
-                  .getState(EventTypes.Encryption)
-                  ?.content
-                  .tryGet<String>('algorithm'))) {
-        continue;
+      if (event.type == EventTypes.Encryption) {
+        // The client must ignore any new m.room.encryption event to prevent
+        // man-in-the-middle attacks!
+        if ((room.encrypted &&
+            event.content.tryGet<String>('algorithm') !=
+                room
+                    .getState(EventTypes.Encryption)
+                    ?.content
+                    .tryGet<String>('algorithm'))) {
+          Logs().wtf(
+            'Received an `m.room.encryption` event in a room, where encryption is already enabled! This event must be ignored as it could be an attack!',
+            jsonEncode(event.toJson()),
+          );
+          continue;
+        } else {
+          // Encryption has been enabled in a room -> Reset tracked user IDs so
+          // sync they can be calculated again.
+          Logs().i('End to end encryption enabled in', room.id);
+          _trackedUserIds = null;
+        }
       }
 
       if (event is MatrixEvent &&
@@ -3067,10 +3119,20 @@ class Client extends MatrixApi {
         final event = Event.fromMatrixEvent(eventUpdate, room);
 
         // Update the room state:
-        if (event.stateKey != null &&
+        final stateKey = event.stateKey;
+        if (stateKey != null &&
             (!room.partial || importantStateEvents.contains(event.type))) {
           room.setState(event);
+
+          if (room.encrypted &&
+              event.type == EventTypes.RoomMember &&
+              {'join', 'invite'}
+                  .contains(event.content.tryGet<String>('membership'))) {
+            // New members should be added to the tracked user IDs for encryption:
+            _trackedUserIds?.add(stateKey);
+          }
         }
+
         if (type != EventUpdateType.timeline) break;
 
         // Is this event redacting the last event?
@@ -3206,13 +3268,11 @@ class Client extends MatrixApi {
     for (final room in rooms) {
       if (room.encrypted && room.membership == Membership.join) {
         try {
-          final userList = await room.requestParticipants();
-          for (final user in userList) {
-            if ([Membership.join, Membership.invite]
-                .contains(user.membership)) {
-              userIds.add(user.id);
-            }
-          }
+          final userList = await room.requestParticipants(
+            [Membership.join, Membership.invite],
+            true,
+          );
+          userIds.addAll(userList.map((user) => user.id));
         } catch (e, s) {
           Logs().e('[E2EE] Failed to fetch participants', e, s);
         }
@@ -3223,13 +3283,25 @@ class Client extends MatrixApi {
 
   final Map<String, DateTime> _keyQueryFailures = {};
 
+  /// These are the user IDs we share an encrypted room with and need to track
+  /// the devices from, cached here for performance reasons.
+  /// It gets initialized after the first sync of every
+  /// instance and then updated on member changes or sync device changes.
+  Set<String>? _trackedUserIds;
+
   Future<void> updateUserDeviceKeys({Set<String>? additionalUsers}) async {
     try {
       final database = this.database;
       if (!isLogged()) return;
       final dbActions = <Future<dynamic> Function()>[];
-      final trackedUserIds = await _getUserIdsInEncryptedRooms();
-      if (!isLogged()) return;
+      final trackedUserIds =
+          _trackedUserIds ??= await _getUserIdsInEncryptedRooms();
+      if (!isLogged()) {
+        // For the case we get logged out while `_getUserIdsInEncryptedRooms()`
+        // was already started.
+        _trackedUserIds = null;
+        return;
+      }
       trackedUserIds.add(userID!);
       if (additionalUsers != null) trackedUserIds.addAll(additionalUsers);
 
@@ -3769,6 +3841,7 @@ class Client extends MatrixApi {
   Future<void> clearCache() async {
     await abortSync();
     _prevBatch = null;
+    _trackedUserIds = null;
     rooms.clear();
     await database.clearCache();
     encryption?.keyManager.clearOutboundGroupSessions();

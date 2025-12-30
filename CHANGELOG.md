@@ -1,3 +1,55 @@
+## [4.1.0] 20th December 2025
+- refactor: Deprecated Client.customRefreshTokenLifetime in favor of method parameter (Christian Kußowski)
+
+## [4.0.3] 17th December 2025
+- fix: remove call member event wrt unprotected state keys (td)
+
+## [4.0.2] 16th December 2025
+
+- feat: New searchEvents method in room (Christian Kußowski)
+- fix: config option with voip to use unprotected state keys for group call member events (td)
+- fix: skip unnecessary 404 errors in profile fetching for member displayname change events in timeline (Karthikeyan S)
+
+## [4.0.1] 9th December 2025
+
+- refactor: CI as integrate.yaml file without file (Christian Kußowski)
+- refactor: Update lints package and add missing type annotations (Christian Kußowski)
+- feat: add a flag to use MSC3757 (Yash Garg)
+
+## [4.0.0] 13th November 2025
+
+Matrix Dart SDK 4.0.0 comes with support for polls, adds first bits towards OIDC and improved
+support for spaces and threads.
+This release also fixes a major performance leak while updating user device keys in the sync loop.
+Especially for larger accounts this should improve the performance a lot.
+v4.0.0 It comes with some breaking changes:
+
+#### Migration guide
+
+- `Client.checkHomeserver()` now returns a fourth value. You can just ignore it if you don't need auth_metadata.
+- `RelationshipType.reply` has been removed in favor of `Event.inReplyToEventId()` where you can set if you want to ignore fallbacks or not. This makes it easier to differenciate fallback replies and replies inside of a thread.
+
+#### All changes
+- feat: (BREAKING) Discover OIDC auth metadata on Client.checkHomeserver() (Christian Kußowski)
+- feat: Allow init with access token (Christian Kußowski)
+- feat: Implement msc 3381 polls (krille-chan)
+- feat: Use small versions of bullet point characters (Kelrap)
+- fix: Correctly remove space child (Christian Kußowski)
+- fix: Set join rules with knowk_restricted and multiple allow condition room ids (Christian Kußowski)
+- refactor: (BREAKING) Replace Event.relationshipType and Event.relationshipEventId with Event.inReplyToEventId() for replies. (Christian Kußowski)
+- refactor: Add option to always call auth metadata (Christian Kußowski)
+- refactor: Escape HTML tags before markdown rendering (Christian Kußowski)
+- refactor: Make direct chat getter type safe (Christian Kußowski)
+- refactor: Simpler update user device keys (Christian Kußowski)
+- chore: Cache auth metadata response in client (Christian Kußowski)
+- chore: Remove flutter from CI (Christian Kußowski)
+
+## [3.0.2] 24th October 2025
+
+- chore: bump vodozemac version to v0.4.0 (Karthikeyan S)
+- refactor: merge onGroupCallState and onGroupCallEvent into matrixRTCEventStream with proper types (Karthikeyan S)
+- test: matrixRTCEventStream emitted events in a group call (Karthikeyan S)
+
 ## [3.0.1] 15th October 2025
 - feat: Make display sending event configurable in Room.sendEvent() (Christian Kußowski)
 - chore: tidy up call membership event (td)

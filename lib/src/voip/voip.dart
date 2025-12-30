@@ -26,6 +26,9 @@ class VoIP {
   /// everytime this changed would be a pain
   final bool enableSFUE2EEKeyRatcheting;
 
+  /// uses unprotected state keys for group call member events.
+  final bool useUnprotectedPerDeviceStateKeys;
+
   /// cached turn creds
   TurnServerCredentials? _turnServerCredentials;
 
@@ -85,6 +88,7 @@ class VoIP {
     this.client,
     this.delegate, {
     this.enableSFUE2EEKeyRatcheting = false,
+    this.useUnprotectedPerDeviceStateKeys = false,
     this.keyRingSize = 16,
     this.timeouts,
   }) : super() {

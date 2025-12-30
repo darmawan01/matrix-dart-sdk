@@ -64,7 +64,7 @@ void main() {
         groupCall.setState(GroupCallState.localCallFeedInitialized);
         groupCall.setState(GroupCallState.entered);
 
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 3);
         expect(
@@ -124,7 +124,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         final events = <ParticipantsJoinEvent>[];
         groupCall.matrixRTCEventStream.stream
@@ -165,7 +165,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].participants.length, 1);
@@ -244,7 +244,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].participants.length, 1);
@@ -306,7 +306,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         room.setState(
           Event(
@@ -339,7 +339,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].call.remoteUserId, '@zane:example.com');
@@ -391,7 +391,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         room.setState(
           Event(
@@ -424,7 +424,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         final events = <CallRemovedEvent>[];
         groupCall.matrixRTCEventStream.stream
@@ -441,7 +441,7 @@ void main() {
         );
 
         await call.hangup(reason: CallErrorCode.userHangup);
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].call.remoteUserId, '@zoe:example.com');
@@ -500,7 +500,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         room.setState(
           Event(
@@ -533,7 +533,7 @@ void main() {
         );
 
         await groupCall.onMemberStateChanged();
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         final existingCall = voip.calls.values.firstWhere(
           (c) =>
@@ -557,7 +557,7 @@ void main() {
         replacementCall.remoteDeviceId = 'ZARADEVICE';
 
         existingCall.onCallReplaced.add(replacementCall);
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].existingCall.callId, existingCall.callId);
@@ -588,7 +588,7 @@ void main() {
         });
 
         await backend.initLocalStream(groupCall);
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].type, GroupCallStreamType.userMedia);
@@ -617,7 +617,7 @@ void main() {
         groupCall.setState(GroupCallState.entered);
 
         await backend.setScreensharingEnabled(groupCall, true, '');
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.last.type, GroupCallStreamType.screenshare);
       });
@@ -653,10 +653,10 @@ void main() {
         groupCall.setState(GroupCallState.entered);
 
         await backend.setScreensharingEnabled(groupCall, true, '');
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         await backend.setScreensharingEnabled(groupCall, false, '');
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(removedEvents.last.type, GroupCallStreamType.screenshare);
       });
@@ -746,7 +746,7 @@ void main() {
         );
 
         await groupCall.enter();
-        await Future.delayed(Duration(milliseconds: 500));
+        await pumpEventQueue();
 
         final call = voip.calls.values.firstWhere(
           (c) =>
@@ -777,7 +777,8 @@ void main() {
           );
         }
 
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
+        // Keep the 6-second delay as it's likely testing timer-based active speaker detection
         await Future.delayed(Duration(seconds: 6));
 
         expect(events.length, 1);
@@ -815,7 +816,7 @@ void main() {
           true,
           MediaInputKind.audioinput,
         );
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].muted, true);
@@ -827,7 +828,7 @@ void main() {
           true,
           MediaInputKind.videoinput,
         );
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         expect(events.length, 2);
         expect(events[1].muted, true);
@@ -839,7 +840,7 @@ void main() {
           false,
           MediaInputKind.audioinput,
         );
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         expect(events.length, 3);
         expect(events[2].muted, false);
@@ -851,7 +852,7 @@ void main() {
           false,
           MediaInputKind.videoinput,
         );
-        await Future.delayed(Duration(milliseconds: 50));
+        await pumpEventQueue();
 
         expect(events.length, 4);
         expect(events[3].muted, false);
@@ -897,13 +898,13 @@ void main() {
         groupCall.setState(GroupCallState.entered);
 
         await backend.setScreensharingEnabled(groupCall, true, '');
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 1);
         expect(events[0].screensharing, true);
 
         await backend.setScreensharingEnabled(groupCall, false, '');
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(events.length, 2);
         expect(events[1].screensharing, false);
@@ -938,7 +939,7 @@ void main() {
           true,
           MediaInputKind.videoinput,
         );
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(allEvents.length, 6);
 
@@ -1028,7 +1029,7 @@ void main() {
           true,
           MediaInputKind.audioinput,
         );
-        await Future.delayed(Duration(milliseconds: 100));
+        await pumpEventQueue();
 
         expect(allEvents1.length, 5);
         expect(allEvents2.length, 5);

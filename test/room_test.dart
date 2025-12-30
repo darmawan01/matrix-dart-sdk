@@ -878,6 +878,58 @@ void main() {
       await room.addToDirectChat('Testname');
     });
 
+    test('isDirectChat', () async {
+      // Room !726s6s6q:example.com is in m.direct with @bob:example.com
+      final dmRoom = matrix.getRoomById('!726s6s6q:example.com');
+      expect(dmRoom, isNotNull);
+      expect(dmRoom!.isDirectChat, true);
+      expect(dmRoom.directChatMatrixID, '@bob:example.com');
+
+      // Room !calls:example.com is NOT in m.direct
+      final nonDmRoom = matrix.getRoomById('!calls:example.com');
+      expect(nonDmRoom, isNotNull);
+      expect(nonDmRoom!.isDirectChat, false);
+      expect(nonDmRoom.directChatMatrixID, isNull);
+
+      // Simulate m.direct update via sync - add nonDmRoom as direct chat
+      await matrix.handleSync(
+        SyncUpdate.fromJson(
+          jsonDecode('''
+          {
+            "next_batch": "sync_dc1",
+            "account_data": {
+              "events": [{
+                "type": "m.direct",
+                "content": {"@alice:example.com": ["!calls:example.com"]}
+              }]
+            }
+          }
+        '''),
+        ),
+      );
+      expect(nonDmRoom.isDirectChat, true);
+      expect(nonDmRoom.directChatMatrixID, '@alice:example.com');
+
+      // Simulate m.direct update - remove room from direct chats
+      await matrix.handleSync(
+        SyncUpdate.fromJson(
+          jsonDecode('''
+          {
+            "next_batch": "sync_dc2",
+            "account_data": {
+              "events": [{
+                "type": "m.direct",
+                "content": {}
+              }]
+            }
+          }
+        '''),
+        ),
+      );
+      expect(nonDmRoom.isDirectChat, false);
+      expect(nonDmRoom.directChatMatrixID, isNull);
+    });
+
     test('getTimeline', () async {
       final timeline = await room.getTimeline();
       expect(timeline.events.length, 17);
@@ -1843,6 +1895,108 @@ void main() {
         await room.lastEvent?.calcLocalizedBody(MatrixDefaultLocalizations()),
         'Cancelled sending message',
       );
+    });
+
+    test('searchEvents', () async {
+      FakeMatrixApi.currentApi!.api['GET']![
+              '/client/v3/rooms/!localpart%3Aserver.abc/messages?from&dir=b&limit=1000&filter=%7B%22types%22%3A%5B%22m.room.message%22%2C%22m.room.encrypted%22%5D%7D'] =
+          (_) => {
+                'chunk': [
+                  {
+                    'content': {
+                      'body': 'This is an example text message',
+                      'format': 'org.matrix.custom.html',
+                      'formatted_body':
+                          '<b>This is an example text message</b>',
+                      'msgtype': 'm.text',
+                    },
+                    'event_id': '\$history1',
+                    'origin_server_ts': 1432735824653,
+                    'room_id': '!636q39766251:example.com',
+                    'sender': '@example:example.org',
+                    'type': 'm.room.message',
+                    'unsigned': {
+                      'age': 1234,
+                      'membership': 'join',
+                    },
+                  },
+                  {
+                    'content': {
+                      'name': 'The room name',
+                    },
+                    'event_id': '\$history2',
+                    'origin_server_ts': 1432735824653,
+                    'room_id': '!636q39766251:example.com',
+                    'sender': '@example:example.org',
+                    'state_key': '',
+                    'type': 'm.room.name',
+                    'unsigned': {
+                      'age': 1234,
+                      'membership': 'join',
+                    },
+                  },
+                  {
+                    'content': {
+                      'body': 'Gangnam Style',
+                      'info': {
+                        'duration': 2140786,
+                        'h': 320,
+                        'mimetype': 'video/mp4',
+                        'size': 1563685,
+                        'thumbnail_info': {
+                          'h': 300,
+                          'mimetype': 'image/jpeg',
+                          'size': 46144,
+                          'w': 300,
+                        },
+                        'thumbnail_url':
+                            'mxc://example.org/FHyPlCeYUSFFxlgbQYZmoEoe',
+                        'w': 480,
+                      },
+                      'msgtype': 'm.video',
+                      'url': 'mxc://example.org/a526eYUSFFxlgbQYZmo442',
+                    },
+                    'event_id': '\$history3',
+                    'origin_server_ts': 1432735824653,
+                    'room_id': '!636q39766251:example.com',
+                    'sender': '@example:example.org',
+                    'type': 'm.room.message',
+                    'unsigned': {
+                      'age': 1234,
+                      'membership': 'join',
+                    },
+                  }
+                ],
+                'end': 't47409-4357353_219380_26003_2265',
+                'start': 't47429-4392820_219380_26003_2265',
+              };
+      final searchResult = await room.searchEvents(searchFunc: (_) => true);
+      expect(searchResult.events.length, 18);
+      expect(searchResult.nextBatch, 't47409-4357353_219380_26003_2265');
+      expect(searchResult.searchedUntil!.millisecondsSinceEpoch, 1432735824653);
+      expect(
+        searchResult.events.any(
+          (event1) => searchResult.events.any(
+            (event2) => event1 != event2 && event1.eventId == event2.eventId,
+          ),
+        ),
+        false,
+        reason: 'No events are duplicated',
+      );
+
+      FakeMatrixApi.currentApi!.api['GET']![
+              '/client/v3/rooms/!localpart%3Aserver.abc/messages?from=t47409-4357353_219380_26003_2265&dir=b&limit=1000&filter=%7B%22types%22%3A%5B%22m.room.message%22%2C%22m.room.encrypted%22%5D%7D'] =
+          (_) => {
+                'start': 't47409-4357353_219380_26003_2265',
+                'chunk': [],
+              };
+      final secondResult = await room.searchEvents(
+        searchFunc: (_) => true,
+        nextBatch: searchResult.nextBatch,
+      );
+      expect(secondResult.events.isEmpty, true);
+      expect(secondResult.searchedUntil, null);
+      expect(secondResult.nextBatch, null);
     });
 
     test('logout', () async {

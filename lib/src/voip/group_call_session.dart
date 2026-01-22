@@ -132,11 +132,27 @@ class GroupCallSession {
       await backend.initLocalStream(this, stream: stream);
     }
 
-    await sendMemberStateEvent();
+    bool shouldSendNotification = false;
+    if (!room.hasActiveGroupCall(voip)) {
+      shouldSendNotification = true;
+    }
+
+    final memberEventId = await sendMemberStateEvent();
 
     setState(GroupCallState.entered);
 
     Logs().v('Entered group call $groupCallId');
+
+    if (shouldSendNotification) {
+      Logs().d(
+        'Sending RTC notification for group call started with membership: $memberEventId',
+      );
+      await room.sendRtcNotification(
+        type: RtcNotificationType.notification,
+        mentionRoom: true,
+        memberEventId: memberEventId,
+      );
+    }
 
     // Set up _participants for the members currently in the call.
     // Other members will be picked up by the RoomState.members event.
@@ -154,6 +170,7 @@ class GroupCallSession {
   }
 
   Future<void> leave() async {
+    setState(GroupCallState.leaving);
     await removeMemberStateEvent();
     await backend.dispose(this);
     setState(GroupCallState.localCallFeedUninitialized);
@@ -166,7 +183,7 @@ class GroupCallSession {
     setState(GroupCallState.ended);
   }
 
-  Future<void> sendMemberStateEvent() async {
+  Future<String?> sendMemberStateEvent() async {
     // Get current member event ID to preserve permanent reactions
     final currentMemberships = room.getCallMembershipsForUser(
       client.userID!,
@@ -237,6 +254,7 @@ class GroupCallSession {
         }
       }),
     );
+    return newEventId;
   }
 
   Future<void> removeMemberStateEvent() {
@@ -305,6 +323,34 @@ class GroupCallSession {
             .add(ParticipantsJoinEvent(participants: anyJoined.toList()));
       }
       if (anyLeft.isNotEmpty) {
+        if (anyLeft.contains(localParticipant) &&
+            state == GroupCallState.entered) {
+          // hm we did not leave but got a leave event? probably delayed
+          // event did not restart, let's just send our member event again.
+          // if we clicked the leave button our state would have been `leaving`
+          Logs().w(
+            '[onMemberStateChanged] server says that we left the call but looks like we are still in it, will force join again',
+          );
+
+          // also clear delayed event state so that they can be started again
+          final canceller =
+              voip.delayedEventCancellers['$groupCallId|$application|$scope'];
+          if (canceller != null) {
+            canceller.restartTimer.cancel();
+
+            // because the server said you left, you don't actually have to cancel
+            // the delayed event, the server already thinks it's cancelled
+
+            voip.delayedEventCancellers
+                .remove('$groupCallId|$application|$scope');
+          }
+
+          // rejoin the call and share the key with the existing participants
+          anyLeft.remove(localParticipant);
+          await sendMemberStateEvent();
+          await backend.preShareKey(this);
+        }
+
         final nonLocalAnyLeft = Set<CallParticipant>.from(anyLeft)
           ..remove(localParticipant);
         if (nonLocalAnyLeft.isNotEmpty && state == GroupCallState.entered) {

@@ -1,4 +1,4 @@
-name: Continious Integration
+name: Continuous Integration
 
 on:
   push:
@@ -169,3 +169,18 @@ jobs:
         run: |
           dart pub get
           dart pub publish --dry-run
+
+  # Call the publish workflow only when all tests pass and this is a tag push
+  call_publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      [
+        e2ee_test,
+        dart_web_compatible,
+        database_web_tests,
+        pub-dev-dry-run,
+      ]
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/publish.yml

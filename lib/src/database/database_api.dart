@@ -353,11 +353,17 @@ abstract class DatabaseApi {
 
   Future<CachedPresence?> getPresence(String userId);
 
-  Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation);
+  Future<void> cacheCustomObject(String cacheKey, Map<String, Object?> object);
 
-  Future<DiscoveryInformation?> getWellKnown();
+  Future<({Map<String, Object?> content, DateTime savedAt})?>
+      getCustomCacheObject(String cacheKey);
 
   /// Deletes the whole database. The database needs to be created again after
   /// this.
   Future<void> delete();
+
+  Future<void> storeLatestReceiptState(
+    String roomId,
+    LatestReceiptState receiptState,
+  );
 }

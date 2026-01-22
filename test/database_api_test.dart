@@ -113,7 +113,7 @@ void main() {
         final rooms = await database.getRoomList(client);
         expect(rooms.single.id, '!testroom');
       });
-      test('getRoomList', () async {
+      test('getSingleRoom', () async {
         final room = await database.getSingleRoom(
           Client(
             'testclient',
@@ -122,6 +122,42 @@ void main() {
           '!testroom',
         );
         expect(room?.id, '!testroom');
+      });
+      test('storeLatestReceiptState', () async {
+        await database.storeLatestReceiptState(
+          '!testroom',
+          LatestReceiptState(
+            global: LatestReceiptStateForTimeline(
+              latestOwnReceipt: LatestReceiptStateData(
+                '\$1234',
+                DateTime.now().millisecondsSinceEpoch,
+              ),
+              ownPrivate: null,
+              ownPublic: null,
+              otherUsers: {},
+            ),
+          ),
+        );
+        final room = await database.getSingleRoom(
+          Client(
+            'testclient',
+            database: await getMatrixSdkDatabase(),
+          ),
+          '!testroom',
+        );
+        expect(room?.id, '!testroom');
+        expect(room!.receiptState.global.latestOwnReceipt!.eventId, '\$1234');
+        final rooms = await database.getRoomList(
+          Client(
+            'testclient',
+            database: await getMatrixSdkDatabase(),
+          ),
+        );
+        expect(rooms.single.id, '!testroom');
+        expect(
+          rooms.single.receiptState.global.latestOwnReceipt!.eventId,
+          '\$1234',
+        );
       });
       test('getRoomList', () async {
         final list = await database.getRoomList(
@@ -677,6 +713,20 @@ void main() {
           '@alice:example.com',
           true,
         );
+      });
+      test('storeUserDeviceKeysInfo', () async {
+        var cache = await database.getCustomCacheObject('test');
+        expect(cache, null);
+        await database.cacheCustomObject(
+          'test',
+          {'foo': 'bar', 'num': 42},
+        );
+        cache = await database.getCustomCacheObject('test');
+        expect(cache!.content, {'foo': 'bar', 'num': 42});
+
+        await database.clearCache();
+        cache = await database.getCustomCacheObject('test');
+        expect(cache, null);
       });
       test('storeUserDeviceKey', () async {
         await database.storeUserDeviceKey(

@@ -18,9 +18,10 @@
 
 import 'dart:io';
 
-import 'package:olm/olm.dart' as olm;
 import 'package:test/test.dart';
+import 'package:vodozemac/vodozemac.dart' as vod;
 
+import 'package:matrix/encryption/utils/crypto_setup_extension.dart';
 import 'package:matrix/matrix.dart';
 import '../test/fake_database.dart';
 import 'test_config.dart';
@@ -39,15 +40,16 @@ void main() => group(
           Client? testClientA, testClientB;
 
           try {
-            await olm.init();
-            olm.Account();
-            Logs().i('[LibOlm] Enabled');
+            await vod.init(
+              wasmPath: './pkg/',
+              libraryPath: './rust/target/debug/',
+            );
 
             final homeserverUri = Uri.parse(homeserver);
             Logs().i('++++ Using homeserver $homeserverUri ++++');
 
             Logs().i('++++ Login Alice at ++++');
-            testClientA = Client('TestClientA', databaseBuilder: getDatabase);
+            testClientA = Client('TestClientA', database: await getDatabase());
             await testClientA.checkHomeserver(homeserverUri);
             await testClientA.login(
               LoginType.mLoginPassword,
@@ -57,7 +59,7 @@ void main() => group(
             expect(testClientA.encryptionEnabled, true);
 
             Logs().i('++++ Login Bob ++++');
-            testClientB = Client('TestClientB', databaseBuilder: getDatabase);
+            testClientB = Client('TestClientB', database: await getDatabase());
             await testClientB.checkHomeserver(homeserverUri);
             await testClientB.login(
               LoginType.mLoginPassword,
@@ -229,7 +231,7 @@ void main() => group(
             var currentSessionIdA = room.client.encryption!.keyManager
                 .getOutboundGroupSession(room.id)!
                 .outboundGroupSession!
-                .session_id();
+                .sessionId;
             /*expect(room.client.encryption.keyManager
           .getInboundGroupSession(room.id, currentSessionIdA, '') !=
       null);*/
@@ -284,7 +286,7 @@ void main() => group(
               room.client.encryption!.keyManager
                   .getOutboundGroupSession(room.id)!
                   .outboundGroupSession!
-                  .session_id(),
+                  .sessionId,
               currentSessionIdA,
             );
             /*expect(room.client.encryption.keyManager
@@ -315,7 +317,7 @@ void main() => group(
               room.client.encryption!.keyManager
                   .getOutboundGroupSession(room.id)!
                   .outboundGroupSession!
-                  .session_id(),
+                  .sessionId,
               currentSessionIdA,
             );
             final inviteRoomOutboundGroupSession = inviteRoom
@@ -325,12 +327,12 @@ void main() => group(
             expect(inviteRoomOutboundGroupSession.isValid, isTrue);
             /*expect(inviteRoom.client.encryption.keyManager.getInboundGroupSession(
           inviteRoom.id,
-          inviteRoomOutboundGroupSession.outboundGroupSession.session_id(),
+          inviteRoomOutboundGroupSession.outboundGroupSession.sessionId,
           '') !=
       null);
   expect(room.client.encryption.keyManager.getInboundGroupSession(
           room.id,
-          inviteRoomOutboundGroupSession.outboundGroupSession.session_id(),
+          inviteRoomOutboundGroupSession.outboundGroupSession.sessionId,
           '') !=
       null);*/
             expect(inviteRoom.lastEvent!.body, testMessage3);
@@ -341,7 +343,7 @@ void main() => group(
 
             Logs().i('++++ Login Bob in another client ++++');
             final testClientC =
-                Client('TestClientC', databaseBuilder: getDatabase);
+                Client('TestClientC', database: await getDatabase());
             await testClientC.checkHomeserver(homeserverUri);
             // We can't sign in using the displayname, since that breaks e2ee on dendrite: https://github.com/matrix-org/dendrite/issues/2914
             await testClientC.login(
@@ -392,7 +394,7 @@ void main() => group(
               room.client.encryption!.keyManager
                   .getOutboundGroupSession(room.id)!
                   .outboundGroupSession!
-                  .session_id(),
+                  .sessionId,
               currentSessionIdA,
             );
             /*expect(inviteRoom.client.encryption.keyManager
@@ -440,14 +442,14 @@ void main() => group(
                 room.client.encryption!.keyManager
                     .getOutboundGroupSession(room.id)!
                     .outboundGroupSession!
-                    .session_id(),
+                    .sessionId,
                 isNot(currentSessionIdA),
               );
             }
             currentSessionIdA = room.client.encryption!.keyManager
                 .getOutboundGroupSession(room.id)!
                 .outboundGroupSession!
-                .session_id();
+                .sessionId;
             /*expect(inviteRoom.client.encryption.keyManager
           .getInboundGroupSession(inviteRoom.id, currentSessionIdA, '') !=
       null);*/
@@ -457,8 +459,31 @@ void main() => group(
               "++++ (Bob) Received decrypted message: '${inviteRoom.lastEvent!.body}' ++++",
             );
 
-            await room.leave();
-            await room.forget();
+            Logs().i('++++ (Alice) Init crypto identity ++++');
+            if (Platform.environment['HOMESERVER_IMPLEMENTATION'] !=
+                'conduit') {
+              const passphrase = 'aliceSecurePassphrase100%';
+              await testClientA.initCryptoIdentity(passphrase: passphrase);
+              await testClientA.logout();
+              await testClientA.checkHomeserver(homeserverUri);
+              await testClientA.login(
+                LoginType.mLoginPassword,
+                identifier:
+                    AuthenticationUserIdentifier(user: Users.user1.name),
+                password: Users.user1.password,
+              );
+              await testClientA.oneShotSync();
+              await testClientA.restoreCryptoIdentity(passphrase);
+              final newSessionRoomA = testClientA.getRoomById(roomId)!;
+              await newSessionRoomA.lastEvent?.requestKey();
+              expect(newSessionRoomA.lastEvent!.body, testMessage6);
+              await newSessionRoomA.leave();
+              await newSessionRoomA.forget();
+            } else {
+              await room.leave();
+              await room.forget();
+            }
+
             await inviteRoom.leave();
             await inviteRoom.forget();
             await Future.delayed(Duration(seconds: 1));
@@ -485,15 +510,11 @@ void main() => group(
           Client? testClientA, testClientB;
 
           try {
-            await olm.init();
-            olm.Account();
-            Logs().i('[LibOlm] Enabled');
-
             final homeserverUri = Uri.parse(homeserver);
             Logs().i('++++ Using homeserver $homeserverUri ++++');
 
             Logs().i('++++ Login Alice at ++++');
-            testClientA = Client('TestClientA', databaseBuilder: getDatabase);
+            testClientA = Client('TestClientA', database: await getDatabase());
             await testClientA.checkHomeserver(homeserverUri);
             await testClientA.login(
               LoginType.mLoginPassword,
@@ -503,7 +524,7 @@ void main() => group(
             expect(testClientA.encryptionEnabled, true);
 
             Logs().i('++++ Login Bob ++++');
-            testClientB = Client('TestClientB', databaseBuilder: getDatabase);
+            testClientB = Client('TestClientB', database: await getDatabase());
             await testClientB.checkHomeserver(homeserverUri);
             await testClientB.login(
               LoginType.mLoginPassword,

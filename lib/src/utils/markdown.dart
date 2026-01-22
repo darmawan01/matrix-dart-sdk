@@ -212,8 +212,14 @@ String markdown(
   bool convertLinebreaks = true,
 }) {
   var ret = markdownToHtml(
-    text.replaceNewlines(),
-    extensionSet: ExtensionSet.commonMark,
+    text
+        .replaceAllMapped(
+          // Replace HTML tags
+          RegExp(r'<([^>]*)>'),
+          (match) => '&lt;${match.group(1)}&gt;',
+        )
+        .replaceNewlines(),
+    extensionSet: ExtensionSet.gitHubFlavored,
     blockSyntaxes: [
       BlockLatexSyntax(),
     ],

@@ -23,9 +23,9 @@ import 'dart:typed_data';
 
 import 'package:canonical_json/canonical_json.dart';
 import 'package:collection/collection.dart';
-import 'package:olm/olm.dart' as olm;
 import 'package:path/path.dart' show join;
 import 'package:test/test.dart';
+import 'package:vodozemac/vodozemac.dart' as vod;
 
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/utils/client_init_exception.dart';
@@ -35,14 +35,14 @@ import 'fake_database.dart';
 void main() {
   // key @test:fakeServer.notExisting
   const pickledOlmAccount =
-      'N2v1MkIFGcl0mQpo2OCwSopxPQJ0wnl7oe7PKiT4141AijfdTIhRu+ceXzXKy3Kr00nLqXtRv7kid6hU4a+V0rfJWLL0Y51+3Rp/ORDVnQy+SSeo6Fn4FHcXrxifJEJ0djla5u98fBcJ8BSkhIDmtXRPi5/oJAvpiYn+8zMjFHobOeZUAxYR0VfQ9JzSYBsSovoQ7uFkNks1M4EDUvHtuyg3RxViwdNxs3718fyAqQ/VSwbXsY0Nl+qQbF+nlVGHenGqk5SuNl1P6e1PzZxcR0IfXA94Xij1Ob5gDv5YH4UCn9wRMG0abZsQP0YzpDM0FLaHSCyo9i5JD/vMlhH+nZWrgAzPPCTNGYewNV8/h3c+VyJh8ZTx/fVi6Yq46Fv+27Ga2ETRZ3Qn+Oyx6dLBjnBZ9iUvIhqpe2XqaGA1PopOz8iDnaZitw';
+      'huxcPifHlyiQsX7cZeMMITbka3hLeUT3ss6DLL6dV7knaD4wgAYK6gcWknkixnX8C5KMIyxzytxiNqAOhDFRE5NsET8hr2dQ8OvXX7M95eQ7/3dPi7FkPUIbvneTSGgJYNDxJdHsDJ8OBHZ3BoqUJFDbTzFfVJjEzN4G9XQwPDafZ2p5WyerOK8Twj/rvk5N+ERmkt1XgVLQl66we/BO1ugTeM3YpDHm5lTzFUitJGTIuuONsKG9mmzdAmVUJ9YIrSxwmOBdegbGA+LAl5acg5VOol3KxRgZUMJQRQ58zpBAs72oauHizv1QVoQ7uIUiCUeb9lym+TEjmApvhru/1CPHU90K5jHNZ57wb/4V9VsqBWuoNibzDWG35YTFLcx0o+1lrCIjm1QjuC0777G+L1HNw5wnppV3z/k0YujjuPS3wvOA30TjHg';
   const identityKey = '7rvl3jORJkBiK4XX1e5TnGnqz068XfYJ0W++Ml63rgk';
   const fingerprintKey = 'gjL//fyaFHADt9KBADGag8g7F8Up78B/K1zXeiEPLJo';
 
   group('client path', () {
     late Client clientOnPath;
 
-    final dbPath = join(Directory.current.path, 'test.sqlite');
+    final dbPath = join(Directory.current.path, 'client_path_test.sqlite');
 
     setUp(() async {
       expect(
@@ -59,7 +59,21 @@ void main() {
     test('logout', () async {
       expect(await File(dbPath).exists(), true);
       await clientOnPath.logout();
+      await clientOnPath.database.delete();
       expect(await File(dbPath).exists(), false);
+    });
+  });
+
+  group('Export and Import', () {
+    test('exportDump and importDump', () async {
+      final client = await getClient();
+      final userId = client.userID;
+      final export = await client.exportDump();
+      expect(export != null, true);
+      expect(client.userID, null);
+      final importClient = Client('Import', database: await getDatabase());
+      await importClient.importDump(export!);
+      expect(importClient.userID, userId);
     });
   });
 
@@ -67,10 +81,7 @@ void main() {
   group('client mem', tags: 'olm', () {
     late Client matrix;
 
-    Logs().level = Level.error;
-
     /// Check if all Elements get created
-
     setUp(() async {
       matrix = await getClient();
     });
@@ -79,7 +90,7 @@ void main() {
       final client = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
       );
       expect(client.isLogged(), false);
       final Set<InitState> initStates = {};
@@ -106,13 +117,29 @@ void main() {
       expect(client.isLogged(), true);
 
       await client.logout();
+
+      expect(client.isLogged(), false);
+
+      await client.login(
+        LoginType.mLoginPassword,
+        token: 'abcd',
+        identifier:
+            AuthenticationUserIdentifier(user: '@test:fakeServer.notExisting'),
+        deviceId: 'GHTYAJCE',
+        onInitStateChanged: initStates.add,
+      );
+      expect(client.isLogged(), true);
+
+      await client.logout();
+
+      expect(client.isLogged(), false);
     });
 
     test('Login', () async {
       matrix = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
       );
       final eventUpdateListFuture = matrix.onTimelineEvent.stream.toList();
       final toDeviceUpdateListFuture = matrix.onToDeviceEvent.stream.toList();
@@ -174,26 +201,26 @@ void main() {
         matrix.getDirectChatFromUserId('@bob:example.com'),
         '!726s6s6q:example.com',
       );
-      expect(matrix.rooms[2].directChatMatrixID, '@bob:example.com');
+      expect(matrix.rooms[1].directChatMatrixID, '@bob:example.com');
       expect(matrix.directChats, matrix.accountData['m.direct']?.content);
       // ignore: deprecated_member_use_from_same_package
       expect(matrix.presences.length, 1);
-      expect(matrix.rooms[2].ephemerals.length, 2);
-      expect(matrix.rooms[2].typingUsers.length, 1);
-      expect(matrix.rooms[2].typingUsers[0].id, '@alice:example.com');
-      expect(matrix.rooms[2].roomAccountData.length, 3);
-      expect(matrix.rooms[2].encrypted, true);
+      expect(matrix.rooms[1].ephemerals.length, 2);
+      expect(matrix.rooms[1].typingUsers.length, 1);
+      expect(matrix.rooms[1].typingUsers[0].id, '@alice:example.com');
+      expect(matrix.rooms[1].roomAccountData.length, 2);
+      expect(matrix.rooms[1].encrypted, true);
       expect(
-        matrix.rooms[2].encryptionAlgorithm,
+        matrix.rooms[1].encryptionAlgorithm,
         Client.supportedGroupEncryptionAlgorithms.first,
       );
       expect(
         matrix
-            .rooms[2].receiptState.global.otherUsers['@alice:example.com']?.ts,
+            .rooms[1].receiptState.global.otherUsers['@alice:example.com']?.ts,
         1436451550453,
       );
       expect(
-        matrix.rooms[2].receiptState.global.otherUsers['@alice:example.com']
+        matrix.rooms[1].receiptState.global.otherUsers['@alice:example.com']
             ?.eventId,
         '\$7365636s6r6432:example.com',
       );
@@ -204,7 +231,7 @@ void main() {
       expect(inviteRoom.states[EventTypes.RoomMember]?.length, 1);
       expect(matrix.rooms.length, 3);
       expect(
-        matrix.rooms[2].canonicalAlias,
+        matrix.rooms[1].canonicalAlias,
         "#famedlyContactDiscovery:${matrix.userID!.split(":")[1]}",
       );
       expect(
@@ -227,7 +254,6 @@ void main() {
             ?.verified,
         false,
       );
-      expect(matrix.wellKnown, isNull);
 
       await matrix.handleSync(
         SyncUpdate.fromJson({
@@ -282,16 +308,13 @@ void main() {
 
       final eventUpdateList = await eventUpdateListFuture;
 
-      expect(eventUpdateList.length, 3);
+      expect(eventUpdateList.length, 2);
 
-      expect(eventUpdateList[0].type, 'm.room.member');
+      expect(eventUpdateList[0].type, 'm.room.message');
       expect(eventUpdateList[0].roomId, '!726s6s6q:example.com');
 
       expect(eventUpdateList[1].type, 'm.room.message');
-      expect(eventUpdateList[1].roomId, '!726s6s6q:example.com');
-
-      expect(eventUpdateList[2].type, 'm.room.message');
-      expect(eventUpdateList[2].roomId, '!726s6s6f:example.com');
+      expect(eventUpdateList[1].roomId, '!726s6s6f:example.com');
 
       expect(
         matrix
@@ -303,9 +326,11 @@ void main() {
       expect(
         matrix
             .getRoomById('!726s6s6q:example.com')
-            ?.roomAccountData[LatestReceiptState.eventType]
-            ?.type,
-        LatestReceiptState.eventType,
+            ?.receiptState
+            .global
+            .otherUsers['@alice:example.com']!
+            .eventId,
+        '\$7365636s6r6432:example.com',
       );
       expect(
         matrix
@@ -369,10 +394,10 @@ void main() {
 
       final key = 'abc def!/_-';
       await matrix.setAccountData(matrix.userID!, key, content);
-      final dbContent = await matrix.database?.getAccountData();
+      final dbContent = await matrix.database.getAccountData();
 
       expect(matrix.accountData[key]?.content, content);
-      expect(dbContent?[key]?.content, content);
+      expect(dbContent[key]?.content, content);
     });
 
     test('roomAccountData', () async {
@@ -383,15 +408,15 @@ void main() {
       final key = 'abc def!/_-';
       final roomId = '!726s6s6q:example.com';
       await matrix.setAccountDataPerRoom(matrix.userID!, roomId, key, content);
-      final roomFromList = (await matrix.database?.getRoomList(matrix))
-          ?.firstWhere((room) => room.id == roomId);
-      final roomFromDb = await matrix.database?.getSingleRoom(matrix, roomId);
+      final roomFromList = (await matrix.database.getRoomList(matrix))
+          .firstWhere((room) => room.id == roomId);
+      final roomFromDb = await matrix.database.getSingleRoom(matrix, roomId);
 
       expect(
         matrix.getRoomById(roomId)?.roomAccountData[key]?.content,
         content,
       );
-      expect(roomFromList?.roomAccountData[key]?.content, content);
+      expect(roomFromList.roomAccountData[key]?.content, content);
       expect(
         roomFromDb?.roomAccountData[key]?.content,
         content,
@@ -418,7 +443,7 @@ void main() {
       matrix = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
       );
 
       expect(matrix.homeserver, null);
@@ -500,16 +525,37 @@ void main() {
       FakeMatrixApi.currentApi?.api = oldapi!;
     });
 
+    test('init() with access token', () async {
+      final client = Client(
+        'testclient',
+        httpClient: FakeMatrixApi(),
+        database: await getDatabase(),
+      );
+      await client.init(
+        newToken: 'abcd1234',
+        newHomeserver: Uri.parse('https://fakeserver.notexisting'),
+      );
+      expect(client.isLogged(), true);
+      expect(client.userID, 'alice@example.com');
+      expect(client.deviceID, 'ABCDEFGH');
+      await client.dispose();
+    });
+
     test('Login', () async {
       matrix = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
       );
 
-      await matrix.checkHomeserver(
+      final (_, _, _, authMetadata) = await matrix.checkHomeserver(
         Uri.parse('https://fakeserver.notexisting'),
         checkWellKnown: false,
+        fetchAuthMetadata: true,
+      );
+      expect(
+        authMetadata?.issuer.toString(),
+        'https://fakeserver.notexisting/',
       );
 
       final loginResp = await matrix.login(
@@ -912,14 +958,14 @@ void main() {
       );
       expect(matrix.onUserProfileUpdate.value, '@alice:example.com');
       final cachedProfileFromDb =
-          await matrix.database?.getUserProfile('@alice:example.com');
+          await matrix.database.getUserProfile('@alice:example.com');
       expect(cachedProfileFromDb?.outdated, true);
     });
     test('joinAfterInviteMembership', () async {
       final client = await getClient();
       await client.abortSync();
       client.rooms.clear();
-      await client.database?.clearCache();
+      await client.database.clearCache();
 
       await client.handleSync(
         SyncUpdate.fromJson(
@@ -955,7 +1001,7 @@ void main() {
 
       await client.abortSync();
       client.rooms.clear();
-      await client.database?.clearCache();
+      await client.database.clearCache();
       await client.dispose(closeDatabase: true);
     });
     test('leaveThenInvite should be invited', () async {
@@ -967,7 +1013,7 @@ void main() {
       final client = await getClient();
       await client.abortSync();
       client.rooms.clear();
-      await client.database?.clearCache();
+      await client.database.clearCache();
 
       final roomId = '!inviteLeaveRoom:example.com';
       await client.handleSync(
@@ -1015,14 +1061,14 @@ void main() {
 
       await client.abortSync();
       client.rooms.clear();
-      await client.database?.clearCache();
+      await client.database.clearCache();
       await client.dispose(closeDatabase: true);
     });
     test('ownProfile', () async {
       final client = await getClient();
       await client.abortSync();
       client.rooms.clear();
-      await client.database?.clearCache();
+      await client.database.clearCache();
       await client.handleSync(
         SyncUpdate.fromJson(
           jsonDecode(
@@ -1075,9 +1121,8 @@ void main() {
 
       final deviceKeys = <DeviceKeys>[];
       for (var i = 0; i < 30; i++) {
-        final account = olm.Account();
-        account.create();
-        final keys = json.decode(account.identity_keys());
+        final account = vod.Account();
+        final keys = account.identityKeys;
         final userId = '@testuser:example.org';
         final deviceId = 'DEVICE$i';
         final keyObj = {
@@ -1088,18 +1133,17 @@ void main() {
             'm.megolm.v1.aes-sha2',
           ],
           'keys': {
-            'curve25519:$deviceId': keys['curve25519'],
-            'ed25519:$deviceId': keys['ed25519'],
+            'curve25519:$deviceId': keys.curve25519.toBase64(),
+            'ed25519:$deviceId': keys.ed25519.toBase64(),
           },
         };
         final signature =
             account.sign(String.fromCharCodes(canonicalJson.encode(keyObj)));
         keyObj['signatures'] = {
           userId: {
-            'ed25519:$deviceId': signature,
+            'ed25519:$deviceId': signature.toBase64(),
           },
         };
-        account.free();
         deviceKeys.add(DeviceKeys.fromJson(keyObj, matrix));
       }
       FakeMatrixApi.calledEndpoints.clear();
@@ -1394,11 +1438,11 @@ void main() {
       );
     });
     test('Test the fake store api', () async {
-      final database = await getDatabase(null);
+      final database = await getDatabase();
       final client1 = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: (_) => database,
+        database: database,
       );
 
       await client1.init(
@@ -1418,7 +1462,7 @@ void main() {
       final client2 = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: (_) => database,
+        database: database,
       );
 
       await client2.init();
@@ -1466,25 +1510,16 @@ void main() {
     });
     test('upload', () async {
       final client = await getClient();
-      final response =
-          await client.uploadContent(Uint8List(0), filename: 'file.jpeg');
+      final response = await client.uploadContent(
+        Uint8List(0),
+        filename: 'file.jpeg',
+      );
       expect(response.toString(), 'mxc://example.com/AQwafuaFswefuhsfAFAgsw');
       expect(
-        await client.database?.getFile(response) != null,
-        client.database?.supportsFileStoring,
+        await client.database.getFile(response) != null,
+        client.database.supportsFileStoring,
       );
       await client.dispose(closeDatabase: true);
-    });
-
-    test('wellKnown cache', () async {
-      final client = await getClient();
-      expect(client.wellKnown, null);
-      await client.getWellknown();
-      expect(
-        client.wellKnown?.mHomeserver.baseUrl.host,
-        'fakeserver.notexisting',
-      );
-      await client.dispose();
     });
 
     test('refreshAccessToken', () async {
@@ -1509,7 +1544,7 @@ void main() {
       FakeMatrixApi.expectedAccessToken = null;
       expect(client.accessToken, 'a_new_token');
       expect(softLoggedOut, 1);
-      final storedClient = await client.database?.getClient(client.clientName);
+      final storedClient = await client.database.getClient(client.clientName);
       expect(storedClient?.tryGet<String>('token'), 'a_new_token');
       expect(
         storedClient?.tryGet<String>('refresh_token'),
@@ -1580,11 +1615,11 @@ void main() {
     });
 
     test('Database Migration', () async {
-      final firstDatabase = await getDatabase(null);
+      final firstDatabase = await getDatabase();
       final firstClient = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: (_) => firstDatabase,
+        database: firstDatabase,
       );
       FakeMatrixApi.client = firstClient;
       await firstClient.checkHomeserver(
@@ -1605,7 +1640,7 @@ void main() {
       final newClient = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
         legacyDatabaseBuilder: (_) => firstDatabase,
       );
       final Set<InitState> initStates = {};
@@ -1621,7 +1656,7 @@ void main() {
       await newClient.dispose(closeDatabase: false);
 
       await firstDatabase.close();
-      final sameOldFirstDatabase = await getDatabase(null);
+      final sameOldFirstDatabase = await getDatabase();
       expect(await sameOldFirstDatabase.getClient('testclient'), null);
     });
 
@@ -1629,7 +1664,7 @@ void main() {
       final client = Client(
         'testclient',
         httpClient: FakeMatrixApi(),
-        databaseBuilder: getDatabase,
+        database: await getDatabase(),
       )
         ..accessToken = '1234'
         ..baseUri = Uri.parse('https://fakeserver.notexisting');
@@ -1664,8 +1699,8 @@ void main() {
       expect(event?.room.name, 'TestRoomName');
       expect(event?.room.canonicalAlias, '#testalias:blaaa');
       final storedEvent =
-          await client.database?.getEventById('123', event!.room);
-      expect(storedEvent?.eventId, event?.eventId);
+          await client.database.getEventById('123', event!.room);
+      expect(storedEvent?.eventId, event.eventId);
 
       event = await client.getEventByPushNotification(
         PushNotification(
@@ -1680,8 +1715,8 @@ void main() {
       expect(event?.messageType, 'm.text');
       expect(event?.type, 'm.room.message');
       final storedEvent2 = await client.database
-          ?.getEventById('143273582443PhrSn:example.org', event!.room);
-      expect(storedEvent2?.eventId, event?.eventId);
+          .getEventById('143273582443PhrSn:example.org', event!.room);
+      expect(storedEvent2?.eventId, event.eventId);
     });
 
     test('Rooms and archived rooms getter', () async {
@@ -1738,7 +1773,7 @@ void main() {
       () async {
         final customClient = Client(
           'failclient',
-          databaseBuilder: getMatrixSdkDatabase,
+          database: await getMatrixSdkDatabase(),
         );
         try {
           await customClient.init(
@@ -1757,7 +1792,10 @@ void main() {
           expect(error.homeserver, Uri.parse('https://test.server'));
           expect(error.olmAccount, 'abcd');
           expect(error.userId, '@user:server');
-          expect(error.toString(), 'Exception: BAD_ACCOUNT_KEY');
+          expect(
+            error.originalException.runtimeType.toString(),
+            'AnyhowException',
+          );
         }
         await customClient.dispose(closeDatabase: true);
       },

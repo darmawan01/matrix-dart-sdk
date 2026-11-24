@@ -194,6 +194,7 @@ class Client extends MatrixApi {
     this.shareKeysWith = ShareKeysWith.crossVerifiedIfEnabled,
     this.enableDehydratedDevices = false,
     this.receiptsPublicByDefault = true,
+    this.clearOnInitFailure = true,
 
     /// Implement your https://spec.matrix.org/v1.9/client-server-api/#soft-logout
     /// logic here.
@@ -377,6 +378,9 @@ class Client extends MatrixApi {
 
   /// Whether read receipts are sent as public receipts by default or just as private receipts.
   bool receiptsPublicByDefault = true;
+
+  /// Preserve the stored session when an init failure can be retried safely.
+  final bool clearOnInitFailure;
 
   /// Whether this client supports end-to-end encryption using olm.
   bool get encryptionEnabled => encryption?.enabled == true;
@@ -2263,7 +2267,7 @@ class Client extends MatrixApi {
         deviceName: deviceName,
         olmAccount: olmAccount,
       );
-      await clear();
+      if (clearOnInitFailure) await clear();
       throw clientInitException;
     } finally {
       _initLock = false;

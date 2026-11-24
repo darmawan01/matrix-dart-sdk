@@ -473,6 +473,11 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
         return accountData;
       });
 
+  /// The sync position as stored on disk, skipping this isolate's cache, so a
+  /// client sharing the file with another one sees the position it wrote.
+  Future<String?> getStoredPrevBatch() async =>
+      (await _clientBox.getAllValues())['prev_batch'];
+
   @override
   Future<Map<String, dynamic>?> getClient(String name) =>
       runBenchmarked('Get Client from store', () async {

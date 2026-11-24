@@ -319,6 +319,23 @@ class Client extends MatrixApi {
 
   /// This points to the position in the synchronization history.
   String? get prevBatch => _prevBatch;
+
+  /// Re-reads the sync position stored in the database. Two clients can share
+  /// one database (an app and its background service). Each keeps its own
+  /// in-memory position, read once at init, so the one taking over syncs again
+  /// from where it last stopped and gets the other's events a second time.
+  /// Call this before restarting the sync on the client that takes over.
+  /// Returns the position before and after, for logging.
+  Future<({String? before, String? after})> reloadPrevBatch() async {
+    final before = _prevBatch;
+    final db = database;
+    if (db is MatrixSdkDatabase) {
+      final stored = await db.getStoredPrevBatch();
+      if (stored != null && stored.isNotEmpty) _prevBatch = stored;
+    }
+    return (before: before, after: _prevBatch);
+  }
+
   String? _prevBatch;
 
   /// The device ID is an unique identifier for this device.
